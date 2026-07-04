@@ -125,13 +125,14 @@ oder überschrieben.
 Auch das Update-Script muss als root laufen. Falls du nicht bereits root bist,
 nutze `sudo ./scripts/update.sh`.
 
-In der Weboberfläche gibt es unter `Settings > Update` zusätzlich einen ersten
-GUI-Weg für `git fetch --all --tags` und `git pull --ff-only`. Dieser zeigt die
-Git-Ausgabe direkt in der App an und ist hilfreich, um Rechte- oder Git-Fehler
-zu sehen. Er installiert aber keine neuen Abhängigkeiten und startet den
-systemd-Dienst nicht neu. Wenn sich Requirements, Playwright oder
-Systemdienste ändern, bleibt das Server-Script der richtige Weg. Vor Updates
-ist ein Backup über `Settings > Backup` empfehlenswert.
+In der Weboberfläche gibt es unter `Settings > Update` zusätzlich eine
+Git-Pull-Diagnose. Sie führt `git fetch --all --tags` und `git pull --ff-only`
+aus und zeigt die Git-Ausgabe direkt in der App. Das ist hilfreich, um Rechte-
+oder Git-Fehler zu sehen, ersetzt aber kein vollständiges Serverupdate: neue
+Abhängigkeiten werden nicht installiert und der systemd-Dienst wird nicht neu
+gestartet. Wenn sich Requirements, Playwright oder Systemdienste ändern, bleibt
+das Server-Script der richtige Weg. Vor Updates ist ein Backup über
+`Settings > Backup` empfehlenswert.
 
 ## Deinstallation
 

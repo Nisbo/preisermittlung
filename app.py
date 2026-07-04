@@ -49,7 +49,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.7-dev"
+APP_VERSION = "0.1.8-dev"
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
@@ -1869,9 +1869,10 @@ def run_git_pull_update() -> Dict[str, Any]:
             "message": "Diese Installation ist kein Git-Checkout.",
             "output": "Ordner .git wurde nicht gefunden.",
         }
+    safe_directory = f"safe.directory={app_dir}"
     commands = [
-        ["git", "fetch", "--all", "--tags"],
-        ["git", "pull", "--ff-only"],
+        ["git", "-c", safe_directory, "fetch", "--all", "--tags"],
+        ["git", "-c", safe_directory, "pull", "--ff-only"],
     ]
     output_parts: List[str] = []
     for command in commands:
@@ -1908,7 +1909,7 @@ def run_git_pull_update() -> Dict[str, Any]:
     return {
         "ok": True,
         "finished_at": now_iso(),
-        "message": "Git Pull erfolgreich ausgeführt.",
+        "message": "Git Pull erfolgreich ausgeführt. Falls Dateien geändert wurden, ist danach ein Serverupdate oder Neustart nötig.",
         "output": "\n".join(output_parts)[-20000:],
     }
 
@@ -4552,13 +4553,13 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           <div class="small">Diese Anzeige kommt aus der aktuell laufenden App.</div>
         </div>
         <div class="settings-card settings-card-full">
-          <h3>Git-Pull-Update</h3>
-          <div class="small">Führt <code>git fetch --all --tags</code> und <code>git pull --ff-only</code> im App-Verzeichnis aus. Vor einem Update ist ein Backup empfehlenswert.</div>
-          <div class="small">Dieser GUI-Weg installiert keine neuen Python- oder System-Abhängigkeiten und startet den systemd-Dienst nicht neu. Wenn Abhängigkeiten geändert wurden oder der Pull wegen Rechten fehlschlägt, nutze auf dem Server <code>./scripts/update.sh</code> als root.</div>
+          <h3>Git Pull / Diagnose</h3>
+          <div class="small">Prüft, ob die App aus dem Git-Repo neue Dateien ziehen kann. Ausgeführt wird <code>git fetch --all --tags</code> und <code>git pull --ff-only</code> mit einer lokalen Safe-Directory-Ausnahme für dieses App-Verzeichnis.</div>
+          <div class="small">Das ist kein vollständiges Serverupdate: neue Python- oder System-Abhängigkeiten werden nicht installiert und der systemd-Dienst wird nicht neu gestartet. Für ein echtes Update nutze auf dem Server <code>./scripts/update.sh</code> als root.</div>
           <form method="post" action="/settings/update/git-pull" style="margin-top: 12px" data-git-update-form>
             <div class="notice" data-git-update-status hidden>Git Pull wird ausgeführt...</div>
             <div class="actions settings-actions">
-              <button class="primary" type="submit">{icon('download')} Git Pull ausführen</button>
+              <button class="primary" type="submit">{icon('download')} Git Pull testen</button>
             </div>
           </form>
           {update_result_html}
