@@ -4,6 +4,8 @@ import json
 import io
 import re
 import resource
+import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -49,7 +51,10 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.8-dev"
+APP_VERSION = "0.1.9-dev"
+SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
+UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
+UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
@@ -1860,57 +1865,83 @@ def render_notice_html(message: Optional[str]) -> str:
     return f'<div class="notice" data-flash-notice>{content}</div>'
 
 
-def run_git_pull_update() -> Dict[str, Any]:
-    app_dir = Path(__file__).parent
-    if not app_dir.joinpath(".git").exists():
+def update_service_unit() -> str:
+    return f"{UPDATE_SERVICE_NAME}.service"
+
+
+def read_update_log(max_chars: int = 20000) -> str:
+    try:
+        return UPDATE_LOG_PATH.read_text(encoding="utf-8", errors="replace")[-max_chars:]
+    except OSError:
+        return ""
+
+
+def update_service_status() -> Dict[str, Any]:
+    unit = update_service_unit()
+    systemctl = shutil.which("systemctl")
+    status = {
+        "unit": unit,
+        "available": bool(systemctl),
+        "active": False,
+        "state": "unknown",
+        "result": "",
+        "exit_status": "",
+        "log": read_update_log(),
+    }
+    if not systemctl:
+        status["state"] = "systemctl nicht gefunden"
+        return status
+    try:
+        active = subprocess.run(
+            [systemctl, "is-active", unit],
+            text=True,
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        status["state"] = (active.stdout or active.stderr or "unknown").strip()
+        status["active"] = status["state"] == "active"
+        show = subprocess.run(
+            [systemctl, "show", unit, "--property=ActiveState,SubState,Result,ExecMainStatus", "--no-pager"],
+            text=True,
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        for line in (show.stdout or "").splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key == "ActiveState":
+                status["state"] = value or status["state"]
+            elif key == "SubState" and value:
+                status["state"] = f'{status["state"]}/{value}'
+            elif key == "Result":
+                status["result"] = value
+            elif key == "ExecMainStatus":
+                status["exit_status"] = value
+    except (OSError, subprocess.SubprocessError) as exc:
+        status["state"] = f"Status konnte nicht gelesen werden: {exc}"
+    return status
+
+
+def start_update_service() -> Dict[str, Any]:
+    unit = update_service_unit()
+    systemctl = shutil.which("systemctl") or "/bin/systemctl"
+    sudo = shutil.which("sudo")
+    if not sudo:
         return {
             "ok": False,
-            "finished_at": now_iso(),
-            "message": "Diese Installation ist kein Git-Checkout.",
-            "output": "Ordner .git wurde nicht gefunden.",
+            "message": "sudo ist nicht installiert. Bitte einmal das Serverupdate-Script als root ausführen.",
+            "output": "",
         }
-    safe_directory = f"safe.directory={app_dir}"
-    commands = [
-        ["git", "-c", safe_directory, "fetch", "--all", "--tags"],
-        ["git", "-c", safe_directory, "pull", "--ff-only"],
-    ]
-    output_parts: List[str] = []
-    for command in commands:
-        label = " ".join(command)
-        output_parts.append(f"$ {label}")
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=app_dir,
-                text=True,
-                capture_output=True,
-                timeout=180,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            output_parts.append(f"Timeout nach {exc.timeout} Sekunden.")
-            return {
-                "ok": False,
-                "finished_at": now_iso(),
-                "message": f"Update abgebrochen: {label} hat zu lange gedauert.",
-                "output": "\n".join(output_parts)[-20000:],
-            }
-        combined_output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
-        if combined_output:
-            output_parts.append(combined_output)
-        output_parts.append(f"Exit-Code: {completed.returncode}")
-        if completed.returncode != 0:
-            return {
-                "ok": False,
-                "finished_at": now_iso(),
-                "message": f"Update fehlgeschlagen bei: {label}",
-                "output": "\n".join(output_parts)[-20000:],
-            }
+    command = [sudo, "-n", systemctl, "start", "--no-block", unit]
+    completed = subprocess.run(command, text=True, capture_output=True, timeout=20, check=False)
+    output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
     return {
-        "ok": True,
-        "finished_at": now_iso(),
-        "message": "Git Pull erfolgreich ausgeführt. Falls Dateien geändert wurden, ist danach ein Serverupdate oder Neustart nötig.",
-        "output": "\n".join(output_parts)[-20000:],
+        "ok": completed.returncode == 0,
+        "message": "Serverupdate wurde gestartet." if completed.returncode == 0 else "Serverupdate konnte nicht gestartet werden.",
+        "output": output,
     }
 
 
@@ -3932,6 +3963,8 @@ def render_install_info_card() -> str:
     ]
     system_files = [
         ("/etc/systemd/system/preisermittlung.service", "systemd-Service für diese App"),
+        ("/etc/systemd/system/preisermittlung-update.service", "root-seitiger systemd-Job für Updates aus der GUI"),
+        ("/etc/sudoers.d/preisermittlung-update", "erlaubt dem App-User nur diesen Update-Job zu starten"),
         ("/etc/nginx/sites-available/preisermittlung.conf", "nginx-Site-Konfiguration"),
         ("/etc/nginx/sites-enabled/preisermittlung.conf", "nginx-Site-Aktivierung/Symlink"),
     ]
@@ -4051,18 +4084,26 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         ensure_ascii=False,
         indent=2,
     )
-    update_result = state.get("update_result") or {}
-    update_result_html = ""
-    if update_result:
-        update_class = "notice" if update_result.get("ok") else "error"
-        update_output = str(update_result.get("output") or "").strip()
-        update_result_html = (
-            f'<div class="{update_class}" style="margin-top: 12px">'
-            f'<strong>{escape(str(update_result.get("message") or "Update-Ausgabe"))}</strong><br>'
-            f'<span class="small">Zeitpunkt: {escape(format_datetime_de(update_result.get("finished_at")))}</span>'
-            f'{f"<pre><code>{escape(update_output)}</code></pre>" if update_output else ""}'
+    update_status = update_service_status()
+    update_start_result = state.pop("update_start_result", None) or {}
+    if update_start_result:
+        save_state(state)
+    update_start_html = ""
+    if update_start_result:
+        update_start_class = "notice" if update_start_result.get("ok") else "error"
+        update_start_output = str(update_start_result.get("output") or "").strip()
+        update_start_html = (
+            f'<div class="{update_start_class}" style="margin-top: 12px">'
+            f'<strong>{escape(str(update_start_result.get("message") or "Update-Start"))}</strong>'
+            f'{f"<pre><code>{escape(update_start_output)}</code></pre>" if update_start_output else ""}'
             '</div>'
         )
+    update_log_html = (
+        f'<pre><code>{escape(update_status["log"])}</code></pre>'
+        if update_status.get("log")
+        else '<div class="small">Noch kein Update-Log vorhanden.</div>'
+    )
+    update_button_disabled = " disabled" if update_status.get("active") else ""
     manual_pdf_rows = "".join(
         '<div class="market-row">'
         f'<div><strong>{escape(info["name"])}</strong><br>'
@@ -4553,16 +4594,19 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           <div class="small">Diese Anzeige kommt aus der aktuell laufenden App.</div>
         </div>
         <div class="settings-card settings-card-full">
-          <h3>Git Pull / Diagnose</h3>
-          <div class="small">Prüft, ob die App aus dem Git-Repo neue Dateien ziehen kann. Ausgeführt wird <code>git fetch --all --tags</code> und <code>git pull --ff-only</code> mit einer lokalen Safe-Directory-Ausnahme für dieses App-Verzeichnis.</div>
-          <div class="small">Das ist kein vollständiges Serverupdate: neue Python- oder System-Abhängigkeiten werden nicht installiert und der systemd-Dienst wird nicht neu gestartet. Für ein echtes Update nutze auf dem Server <code>./scripts/update.sh</code> als root.</div>
-          <form method="post" action="/settings/update/git-pull" style="margin-top: 12px" data-git-update-form>
-            <div class="notice" data-git-update-status hidden>Git Pull wird ausgeführt...</div>
+          <h3>Serverupdate</h3>
+          <div class="small">Startet den systemd-Job <code>{escape(update_service_unit())}</code>. Der Job läuft als root, führt <code>scripts/update.sh</code> aus, aktualisiert Git, Python-Abhängigkeiten und Playwright und startet die App neu.</div>
+          <div class="small">Vor einem Update ist ein Backup empfehlenswert. Während des Neustarts kann die Weboberfläche kurz nicht erreichbar sein.</div>
+          <div class="metric" style="margin-top: 12px"><span>Status</span><strong>{escape(str(update_status.get("state") or "-"))}</strong></div>
+          <form method="post" action="/settings/update/start" style="margin-top: 12px" data-system-update-form>
+            <div class="notice" data-system-update-status hidden>Serverupdate wird gestartet...</div>
             <div class="actions settings-actions">
-              <button class="primary" type="submit">{icon('download')} Git Pull testen</button>
+              <button class="primary" type="submit"{update_button_disabled}>{icon('download')} Serverupdate starten</button>
             </div>
           </form>
-          {update_result_html}
+          {update_start_html}
+          <h4>Update-Log</h4>
+          {update_log_html}
         </div>
         <div class="settings-card settings-card-full">
           <h3>Config-Schutz</h3>
@@ -4708,11 +4752,11 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
       }});
     }});
 
-    document.querySelectorAll('[data-git-update-form]').forEach((form) => {{
+    document.querySelectorAll('[data-system-update-form]').forEach((form) => {{
       form.addEventListener('submit', () => {{
-        document.querySelectorAll('[data-git-update-status]').forEach((status) => {{
+        document.querySelectorAll('[data-system-update-status]').forEach((status) => {{
           status.hidden = false;
-          status.textContent = 'Git Pull wird ausgeführt...';
+          status.textContent = 'Serverupdate wird gestartet...';
         }});
         const button = form.querySelector('button[type="submit"], button:not([type])');
         if (button) {{
@@ -4949,13 +4993,17 @@ def refresh_selected_providers() -> Response:
     return redirect(url_for("settings_page", _anchor="queries"))
 
 
-@app.post("/settings/update/git-pull")
-def settings_git_pull_update() -> Response:
-    result = run_git_pull_update()
+@app.post("/settings/update/start")
+def settings_start_update() -> Response:
+    status = update_service_status()
+    if status.get("active"):
+        result = {"ok": False, "message": "Es läuft bereits ein Serverupdate.", "output": ""}
+    else:
+        result = start_update_service()
     with state_lock:
         state = load_state()
-        state["update_result"] = result
-        state["notice"] = result.get("message") or ("Git Pull erfolgreich." if result.get("ok") else "Git Pull fehlgeschlagen.")
+        state["update_start_result"] = result
+        state["notice"] = result.get("message") or ("Serverupdate gestartet." if result.get("ok") else "Serverupdate fehlgeschlagen.")
         save_state(state)
     return redirect(url_for("settings_page", _anchor="updates"))
 

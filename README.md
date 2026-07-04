@@ -125,14 +125,19 @@ oder überschrieben.
 Auch das Update-Script muss als root laufen. Falls du nicht bereits root bist,
 nutze `sudo ./scripts/update.sh`.
 
-In der Weboberfläche gibt es unter `Settings > Update` zusätzlich eine
-Git-Pull-Diagnose. Sie führt `git fetch --all --tags` und `git pull --ff-only`
-aus und zeigt die Git-Ausgabe direkt in der App. Das ist hilfreich, um Rechte-
-oder Git-Fehler zu sehen, ersetzt aber kein vollständiges Serverupdate: neue
-Abhängigkeiten werden nicht installiert und der systemd-Dienst wird nicht neu
-gestartet. Wenn sich Requirements, Playwright oder Systemdienste ändern, bleibt
-das Server-Script der richtige Weg. Vor Updates ist ein Backup über
-`Settings > Backup` empfehlenswert.
+In der Weboberfläche gibt es unter `Settings > Update` zusätzlich ein
+Serverupdate per Klick. Die Web-App startet dabei nur den vordefinierten
+systemd-Job `preisermittlung-update.service`; dieser läuft als root und ruft
+intern `scripts/update.sh` auf. Dafür legt der Installer eine eng begrenzte
+sudoers-Regel an, die nur das Starten dieses einen Update-Jobs erlaubt.
+
+Wenn eine bestehende Installation diesen Update-Job noch nicht hat, führe einmal
+manuell das Server-Script aus. Danach ist der Button in der GUI verfügbar:
+
+```bash
+cd /opt/preisermittlung
+./scripts/update.sh
+```
 
 ## Deinstallation
 

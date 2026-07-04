@@ -4,6 +4,9 @@ set -euo pipefail
 APP_NAME="Preisermittlung"
 APP_DIR="${PREISERMITTLUNG_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SERVICE_NAME="${PREISERMITTLUNG_SERVICE:-preisermittlung}"
+UPDATE_SERVICE_NAME="${PREISERMITTLUNG_UPDATE_SERVICE:-${SERVICE_NAME}-update}"
+UPDATE_SERVICE_FILE="/etc/systemd/system/${UPDATE_SERVICE_NAME}.service"
+SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-update"
 RUN_USER="${PREISERMITTLUNG_USER:-www-data}"
 NGINX_SITE="/etc/nginx/sites-available/${SERVICE_NAME}.conf"
 CLIENT_MAX_BODY_SIZE="${PREISERMITTLUNG_CLIENT_MAX_BODY_SIZE:-512M}"
@@ -16,6 +19,11 @@ fi
 cd "${APP_DIR}"
 
 echo "Updating ${APP_NAME} in ${APP_DIR}"
+
+if ! command -v sudo >/dev/null 2>&1; then
+  apt update
+  apt install -y sudo
+fi
 
 if [[ -d ".git" ]]; then
   git fetch --all --tags
@@ -37,6 +45,7 @@ if ".venv/bin/python" -m playwright --version >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 generated manual_pdfs tmp .browser-cache .pdf-cache .playwright-browsers
+chmod +x scripts/update.sh scripts/gui_update.sh
 if [[ ! -f state.json ]]; then
   printf '{}\n' > state.json
 fi
@@ -45,6 +54,32 @@ if id "${RUN_USER}" >/dev/null 2>&1; then
   [[ -f config.yaml ]] && chown "${RUN_USER}:${RUN_USER}" config.yaml
   [[ -f state.json ]] && chown "${RUN_USER}:${RUN_USER}" state.json
 fi
+
+cat > "${UPDATE_SERVICE_FILE}" <<EOF
+[Unit]
+Description=${APP_NAME} Serverupdate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${APP_DIR}
+Environment=PREISERMITTLUNG_APP_DIR=${APP_DIR}
+Environment=PREISERMITTLUNG_SERVICE=${SERVICE_NAME}
+Environment=PREISERMITTLUNG_UPDATE_SERVICE=${UPDATE_SERVICE_NAME}
+Environment=PREISERMITTLUNG_USER=${RUN_USER}
+ExecStart=${APP_DIR}/scripts/gui_update.sh
+TimeoutStartSec=1800
+EOF
+
+SYSTEMCTL_BIN="$(command -v systemctl)"
+cat > "${SUDOERS_FILE}" <<EOF
+${RUN_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} start --no-block ${UPDATE_SERVICE_NAME}.service
+EOF
+chmod 0440 "${SUDOERS_FILE}"
+visudo -cf "${SUDOERS_FILE}" >/dev/null
+
+systemctl daemon-reload
 
 systemctl restart "${SERVICE_NAME}"
 

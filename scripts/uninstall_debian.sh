@@ -4,6 +4,9 @@ set -euo pipefail
 APP_DIR="${PREISERMITTLUNG_APP_DIR:-/opt/preisermittlung}"
 SERVICE_NAME="${PREISERMITTLUNG_SERVICE:-preisermittlung}"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+UPDATE_SERVICE_NAME="${PREISERMITTLUNG_UPDATE_SERVICE:-${SERVICE_NAME}-update}"
+UPDATE_SERVICE_FILE="/etc/systemd/system/${UPDATE_SERVICE_NAME}.service"
+SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-update"
 NGINX_SITE="/etc/nginx/sites-available/${SERVICE_NAME}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${SERVICE_NAME}.conf"
 
@@ -43,10 +46,26 @@ if systemctl list-unit-files "${SERVICE_NAME}.service" >/dev/null 2>&1; then
   systemctl disable "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
 fi
 
+if systemctl list-unit-files "${UPDATE_SERVICE_NAME}.service" >/dev/null 2>&1; then
+  echo "Stoppe ${UPDATE_SERVICE_NAME}.service ..."
+  systemctl stop "${UPDATE_SERVICE_NAME}.service" >/dev/null 2>&1 || true
+fi
+
 if [[ -f "${SERVICE_FILE}" ]]; then
   echo "Entferne ${SERVICE_FILE} ..."
   rm -f "${SERVICE_FILE}"
   systemctl daemon-reload
+fi
+
+if [[ -f "${UPDATE_SERVICE_FILE}" ]]; then
+  echo "Entferne ${UPDATE_SERVICE_FILE} ..."
+  rm -f "${UPDATE_SERVICE_FILE}"
+  systemctl daemon-reload
+fi
+
+if [[ -f "${SUDOERS_FILE}" ]]; then
+  echo "Entferne ${SUDOERS_FILE} ..."
+  rm -f "${SUDOERS_FILE}"
 fi
 
 if [[ -L "${NGINX_LINK}" || -f "${NGINX_LINK}" ]]; then

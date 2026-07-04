@@ -7,6 +7,9 @@ APP_DIR="${PREISERMITTLUNG_APP_DIR:-/opt/preisermittlung}"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_NAME="${PREISERMITTLUNG_SERVICE:-preisermittlung}"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+UPDATE_SERVICE_NAME="${PREISERMITTLUNG_UPDATE_SERVICE:-${SERVICE_NAME}-update}"
+UPDATE_SERVICE_FILE="/etc/systemd/system/${UPDATE_SERVICE_NAME}.service"
+SUDOERS_FILE="/etc/sudoers.d/${SERVICE_NAME}-update"
 NGINX_SITE="/etc/nginx/sites-available/${SERVICE_NAME}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${SERVICE_NAME}.conf"
 INTERNAL_HOST="${PREISERMITTLUNG_HOST:-127.0.0.1}"
@@ -47,6 +50,7 @@ apt install -y \
   git \
   nginx \
   rsync \
+  sudo \
   python3 \
   python3-venv \
   python3-pip \
@@ -146,6 +150,32 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+
+chmod +x "${APP_DIR}/scripts/gui_update.sh" "${APP_DIR}/scripts/update.sh"
+
+cat > "${UPDATE_SERVICE_FILE}" <<EOF
+[Unit]
+Description=${APP_NAME} Serverupdate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${APP_DIR}
+Environment=PREISERMITTLUNG_APP_DIR=${APP_DIR}
+Environment=PREISERMITTLUNG_SERVICE=${SERVICE_NAME}
+Environment=PREISERMITTLUNG_UPDATE_SERVICE=${UPDATE_SERVICE_NAME}
+Environment=PREISERMITTLUNG_USER=${RUN_USER}
+ExecStart=${APP_DIR}/scripts/gui_update.sh
+TimeoutStartSec=1800
+EOF
+
+SYSTEMCTL_BIN="$(command -v systemctl)"
+cat > "${SUDOERS_FILE}" <<EOF
+${RUN_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} start --no-block ${UPDATE_SERVICE_NAME}.service
+EOF
+chmod 0440 "${SUDOERS_FILE}"
+visudo -cf "${SUDOERS_FILE}" >/dev/null
 
 cat > "${NGINX_SITE}" <<EOF
 server {
