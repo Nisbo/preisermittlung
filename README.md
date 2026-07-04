@@ -228,5 +228,7 @@ Lokale Probe-Scripts und Entwicklungstools gehören nicht hinein.
 - Pillow: Bildverarbeitung für Produktbilder und PDF-Treffer-Vorschauen.
 - paho-mqtt: MQTT-Client für Home Assistant Discovery und Statusmeldungen.
 
-Für PDF-Uploads ist nginx im Installer mit `client_max_body_size 100M`
-vorbereitet.
+Für PDF- und Backup-Uploads ist nginx im Installer mit
+`client_max_body_size 512M` vorbereitet. Bei Bedarf kann der Wert vor
+Installation oder Update mit `PREISERMITTLUNG_CLIENT_MAX_BODY_SIZE` angepasst
+werden.

@@ -13,6 +13,7 @@ INTERNAL_HOST="${PREISERMITTLUNG_HOST:-127.0.0.1}"
 INTERNAL_PORT="${PREISERMITTLUNG_PORT:-5050}"
 PUBLIC_PORT="${PREISERMITTLUNG_PUBLIC_PORT:-5151}"
 RUN_USER="${PREISERMITTLUNG_USER:-www-data}"
+CLIENT_MAX_BODY_SIZE="${PREISERMITTLUNG_CLIENT_MAX_BODY_SIZE:-512M}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Please run this installer as root."
@@ -39,6 +40,7 @@ echo "Source: ${SOURCE_DIR}"
 echo "Target: ${APP_DIR}"
 echo "Internal Gunicorn: ${INTERNAL_HOST}:${INTERNAL_PORT}"
 echo "Public nginx port: ${PUBLIC_PORT}"
+echo "nginx upload limit: ${CLIENT_MAX_BODY_SIZE}"
 
 apt update
 apt install -y \
@@ -150,7 +152,7 @@ server {
     listen ${PUBLIC_PORT};
     server_name _;
 
-    client_max_body_size 100M;
+    client_max_body_size ${CLIENT_MAX_BODY_SIZE};
     proxy_connect_timeout 60s;
     proxy_send_timeout 300s;
     proxy_read_timeout 300s;

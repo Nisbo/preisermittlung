@@ -5,6 +5,8 @@ APP_NAME="Preisermittlung"
 APP_DIR="${PREISERMITTLUNG_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SERVICE_NAME="${PREISERMITTLUNG_SERVICE:-preisermittlung}"
 RUN_USER="${PREISERMITTLUNG_USER:-www-data}"
+NGINX_SITE="/etc/nginx/sites-available/${SERVICE_NAME}.conf"
+CLIENT_MAX_BODY_SIZE="${PREISERMITTLUNG_CLIENT_MAX_BODY_SIZE:-512M}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Please run this updater as root."
@@ -52,6 +54,20 @@ if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
   systemctl status "${SERVICE_NAME}" --no-pager -l || true
   journalctl -u "${SERVICE_NAME}" -n 100 --no-pager || true
   exit 1
+fi
+
+if [[ -f "${NGINX_SITE}" ]]; then
+  if grep -q "client_max_body_size" "${NGINX_SITE}"; then
+    sed -i "s/client_max_body_size .*/client_max_body_size ${CLIENT_MAX_BODY_SIZE};/" "${NGINX_SITE}"
+  else
+    sed -i "/server_name _;/a\\    client_max_body_size ${CLIENT_MAX_BODY_SIZE};" "${NGINX_SITE}"
+  fi
+  if nginx -t; then
+    systemctl reload nginx || systemctl restart nginx
+  else
+    echo "nginx configuration test failed after updating client_max_body_size."
+    exit 1
+  fi
 fi
 
 echo
