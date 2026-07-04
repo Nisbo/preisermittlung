@@ -48,7 +48,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.3-dev"
+APP_VERSION = "0.1.4-dev"
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
@@ -4028,7 +4028,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
               </div>
               <div class="notice" data-restore-status hidden style="margin-top: 10px">Backup wird wiederhergestellt. PDFs und Suchwörter werden verarbeitet...</div>
               <div class="actions settings-actions">
-                <button class="danger" type="submit" onclick="showBusyOverlay('Backup wird wiederhergestellt. PDFs und Suchwörter werden verarbeitet...')">{icon('refresh')} Ausgewählte Bereiche wiederherstellen</button>
+                <button class="danger" type="submit" onclick="showBackupStatus('Backup wird wiederhergestellt. PDFs und Suchwörter werden verarbeitet...', '[data-restore-status]')">{icon('refresh')} Ausgewählte Bereiche wiederherstellen</button>
                 <a class="button" href="/backup/import/cancel">Abbrechen</a>
               </div>
             </form>
@@ -4367,11 +4367,11 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           <form method="post" action="/backup/import/analyze" enctype="multipart/form-data" style="margin-top: 12px" data-backup-upload-form>
             <div class="field">
               <label>Backup-ZIP</label>
-              <input type="file" name="backup_file" accept="application/zip,.zip" required onchange="if(this.files.length) showBusyOverlay('Backup ausgewählt. Klicke auf Backup prüfen, um die Datei hochzuladen und zu prüfen.')">
+              <input type="file" name="backup_file" accept="application/zip,.zip" required onchange="if(this.files.length) showBackupStatus('Backup ausgewählt. Klicke auf Backup prüfen, um die Datei hochzuladen und zu prüfen.', '[data-backup-status]')">
             </div>
             <div class="notice" data-backup-status hidden style="margin-top: 10px">Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...</div>
             <div class="actions settings-actions">
-              <button type="submit" onclick="showBusyOverlay('Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...')">{icon('upload')} Backup prüfen</button>
+              <button type="submit" onclick="showBackupStatus('Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...', '[data-backup-status]')">{icon('upload')} Backup prüfen</button>
             </div>
           </form>
         </div>
@@ -4400,15 +4400,9 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     <footer class="app-footer"><span>{escape(APP_NAME)}</span><span>v{escape(APP_VERSION)}</span></footer>
   </main>
   <script>
-    function showBusyOverlay(message) {{
+    function showBackupStatus(message, selector) {{
       const textMessage = message || 'Vorgang läuft...';
-      const overlay = document.querySelector('[data-busy-overlay]');
-      if (overlay) {{
-        overlay.hidden = false;
-        const text = overlay.querySelector('[data-busy-overlay-text]');
-        if (text) text.textContent = textMessage;
-      }}
-      document.querySelectorAll('[data-upload-status-global], [data-backup-status], [data-restore-status]').forEach((status) => {{
+      document.querySelectorAll(selector || '[data-backup-status], [data-restore-status]').forEach((status) => {{
         status.hidden = false;
         status.textContent = textMessage;
       }});
@@ -4417,7 +4411,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     document.querySelectorAll('[data-backup-upload-form]').forEach((form) => {{
       form.addEventListener('submit', (event) => {{
         const message = 'Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...';
-        showBusyOverlay(message);
+        showBackupStatus(message, '[data-backup-status]');
         if (form.dataset.backupSubmitting === 'true') return;
         event.preventDefault();
         form.dataset.backupSubmitting = 'true';
@@ -4435,7 +4429,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
 
     document.querySelectorAll('[data-backup-restore-form]').forEach((form) => {{
       form.addEventListener('submit', () => {{
-        showBusyOverlay('Backup wird wiederhergestellt. PDFs und Suchwörter werden verarbeitet...');
+        showBackupStatus('Backup wird wiederhergestellt. PDFs und Suchwörter werden verarbeitet...', '[data-restore-status]');
       }});
     }});
 
