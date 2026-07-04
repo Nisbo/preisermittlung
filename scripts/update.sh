@@ -30,7 +30,8 @@ fi
 ".venv/bin/pip" install -r requirements.txt
 
 if ".venv/bin/python" -m playwright --version >/dev/null 2>&1; then
-  ".venv/bin/python" -m playwright install chromium
+  PLAYWRIGHT_BROWSERS_PATH="${APP_DIR}/.playwright-browsers" \
+    ".venv/bin/python" -m playwright install --with-deps chromium
 fi
 
 install -d -m 0755 generated manual_pdfs tmp .browser-cache .pdf-cache .playwright-browsers

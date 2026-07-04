@@ -112,7 +112,8 @@ python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.txt"
 
 if "${APP_DIR}/.venv/bin/python" -m playwright --version >/dev/null 2>&1; then
-  "${APP_DIR}/.venv/bin/python" -m playwright install --with-deps chromium
+  PLAYWRIGHT_BROWSERS_PATH="${APP_DIR}/.playwright-browsers" \
+    "${APP_DIR}/.venv/bin/python" -m playwright install --with-deps chromium
 fi
 
 chown -R "${RUN_USER}:${RUN_USER}" \

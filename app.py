@@ -3415,7 +3415,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
       <div class="dialog-head">
         <div>
           <h2>Markt hinzufügen</h2>
-          <div class="small">Suche nach PLZ und speichere anschließend den gewünschten Abholmarkt.</div>
+          <div class="small">Nur für Anbieter, bei denen ein Standort oder Markt konfiguriert werden muss. Anbieter wie Müller, MediaMarkt, ALDI Süd oder Rossmann sind beim Artikel hinzufügen automatisch als Online-Anbieter verfügbar.</div>
         </div>
         <a class="button dialog-close" href="/" aria-label="Schließen">×</a>
       </div>
