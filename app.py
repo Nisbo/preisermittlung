@@ -3538,6 +3538,135 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
 </html>"""
 
 
+def render_install_info_card() -> str:
+    app_dir = Path(__file__).resolve().parent
+    local_items = [
+        (".venv", app_dir / ".venv", "isolierte Python-Umgebung nur für diese App"),
+        (".playwright-browsers", app_dir / ".playwright-browsers", "app-lokaler Chromium/Headless-Shell/FFmpeg-Download für Playwright"),
+        (".browser-cache", app_dir / ".browser-cache", "Browserprofile und Cache-Daten für Playwright-Reader"),
+        (".pdf-cache", app_dir / ".pdf-cache", "PDF-Zwischenspeicher für Prospekt-Auswertung"),
+        ("generated", app_dir / "generated", "generierte Produkt- und Prospektbilder"),
+        ("manual_pdfs", app_dir / "manual_pdfs", "hochgeladene Prospekte"),
+        ("tmp", app_dir / "tmp", "temporäre App-Dateien"),
+        ("config.yaml", app_dir / "config.yaml", "lokale Konfiguration und Artikelliste"),
+        ("state.json", app_dir / "state.json", "Laufzeitstatus, letzte Preise und Fortschritt"),
+    ]
+    python_packages = [
+        "Flask",
+        "gunicorn",
+        "paho-mqtt",
+        "playwright",
+        "pdfplumber",
+        "Pillow",
+        "Jinja2/Werkzeug",
+        "pdfminer/pypdfium2",
+    ]
+    apt_packages = [
+        "git",
+        "nginx",
+        "rsync",
+        "python3",
+        "python3-venv",
+        "python3-pip",
+        "python3-dev",
+        "build-essential",
+        "libjpeg-dev",
+        "zlib1g-dev",
+        "libopenjp2-7",
+        "libtiff6",
+        "poppler-utils",
+    ]
+    playwright_deps = [
+        "libasound2",
+        "libatk-bridge2.0-0",
+        "libatk1.0-0",
+        "libatspi2.0-0",
+        "libcairo2",
+        "libcups2",
+        "libdbus-1-3",
+        "libdrm2",
+        "libgbm1",
+        "libglib2.0-0",
+        "libnspr4",
+        "libnss3",
+        "libpango-1.0-0",
+        "libx11-6",
+        "libxcb1",
+        "libxcomposite1",
+        "libxdamage1",
+        "libxext6",
+        "libxfixes3",
+        "libxkbcommon0",
+        "libxrandr2",
+        "xvfb",
+        "diverse Schriftpakete",
+    ]
+    system_files = [
+        ("/etc/systemd/system/preisermittlung.service", "systemd-Service für diese App"),
+        ("/etc/nginx/sites-available/preisermittlung.conf", "nginx-Site-Konfiguration"),
+        ("/etc/nginx/sites-enabled/preisermittlung.conf", "nginx-Site-Aktivierung/Symlink"),
+        ("nginx.service", "kommt vom Debian-nginx-Paket, wird nicht von Preisermittlung erstellt"),
+    ]
+
+    local_rows = "".join(
+        "<tr>"
+        f"<td><code>{escape(name)}</code></td>"
+        f"<td><code>{escape(str(path))}</code></td>"
+        f"<td>{escape(description)}</td>"
+        "</tr>"
+        for name, path, description in local_items
+    )
+    system_rows = "".join(
+        "<tr>"
+        f"<td><code>{escape(path)}</code></td>"
+        f"<td>{escape(description)}</td>"
+        "</tr>"
+        for path, description in system_files
+    )
+
+    return f"""
+        <div class="settings-card settings-card-full">
+          <h3>Installationsinfo</h3>
+          <div class="small">Diese Übersicht beschreibt, was die Debian-Installation anlegt oder installiert. Wenn Installscript, Update-Script oder Abhängigkeiten geändert werden, muss diese Liste mit gepflegt werden.</div>
+          <div class="table-wrap" style="margin-top: 12px">
+            <table class="info-table">
+              <thead><tr><th colspan="3">App-lokal unter <code>{escape(str(app_dir))}</code></th></tr></thead>
+              <tbody>{local_rows}</tbody>
+            </table>
+          </div>
+          <div class="table-wrap" style="margin-top: 12px">
+            <table class="info-table">
+              <thead><tr><th>Bereich</th><th>Installiert</th><th>Hinweis</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td>Python venv</td>
+                  <td>{escape(", ".join(python_packages))}</td>
+                  <td>Nur innerhalb von <code>{escape(str(app_dir / ".venv"))}</code> nutzbar.</td>
+                </tr>
+                <tr>
+                  <td>apt Basispakete</td>
+                  <td>{escape(", ".join(apt_packages))}</td>
+                  <td>Systemweit installiert, können auch von anderen Anwendungen genutzt werden.</td>
+                </tr>
+                <tr>
+                  <td>Playwright Systembibliotheken</td>
+                  <td>{escape(", ".join(playwright_deps))}</td>
+                  <td>Werden über <code>playwright install --with-deps chromium</code> geprüft oder installiert.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-wrap" style="margin-top: 12px">
+            <table class="info-table">
+              <thead><tr><th>Systemdatei oder Dienst</th><th>Funktion</th></tr></thead>
+              <tbody>{system_rows}</tbody>
+            </table>
+          </div>
+          <div class="small" style="margin-top: 10px">Bei einer Deinstallation können <code>.venv</code>, <code>.playwright-browsers</code> und die App-Caches gefahrlos entfernt werden. Nutzerdaten wie <code>config.yaml</code>, <code>state.json</code>, PDFs und generierte Bilder sollten nur nach Bestätigung gelöscht werden. Systempakete sollten nicht pauschal entfernt werden; dafür eignet sich höchstens eine manuelle Prüfung mit <code>apt autoremove</code>.</div>
+        </div>
+    """
+
+
 def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[str] = None) -> str:
     settings = config.get("settings") or {}
     theme = current_theme(config)
@@ -3622,6 +3751,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         '</tr>'
         for category in settings_categories
     )
+    install_info_html = render_install_info_card()
     return f"""<!doctype html>
 <html lang="de">
 <head>
@@ -3677,6 +3807,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             <span class="small" data-copy-category-ids-status></span>
           </div>
         </div>
+        {install_info_html}
       </div>
     </section>
     <section class="panel" data-settings-panel="queries">
