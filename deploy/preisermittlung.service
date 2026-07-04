@@ -1,0 +1,17 @@
+[Unit]
+Description=Preisermittlung Flask App
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/preisermittlung
+Environment=PYTHONUNBUFFERED=1
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/preisermittlung/.playwright-browsers
+ExecStart=/opt/preisermittlung/.venv/bin/gunicorn --bind 127.0.0.1:5050 --workers 1 --threads 4 --timeout 300 --access-logfile - --error-logfile - app:app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
