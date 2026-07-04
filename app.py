@@ -48,7 +48,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.4-dev"
+APP_VERSION = "0.1.5-dev"
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
@@ -2469,7 +2469,11 @@ def save_product_url_state(product: Dict[str, Any], url: str) -> None:
         save_state(state)
 
 
-def refresh_worker(product_id: Optional[str] = None, refresh_kind: str = "manual") -> None:
+def refresh_worker(
+    product_id: Optional[str] = None,
+    refresh_kind: str = "manual",
+    provider_ids: Optional[List[str]] = None,
+) -> None:
     global progress
     try:
         config = load_config()
@@ -2479,7 +2483,10 @@ def refresh_worker(product_id: Optional[str] = None, refresh_kind: str = "manual
             products = [product for product in products if product["id"] == product_id]
         else:
             products = [product for product in products if product_enabled(product)]
-            if refresh_kind == "auto" and not get_auto_refresh_manual_pdfs_enabled(config):
+            if provider_ids:
+                selected_providers = set(provider_ids)
+                products = [product for product in products if product_provider(config, product) in selected_providers]
+            elif refresh_kind == "auto" and not get_auto_refresh_manual_pdfs_enabled(config):
                 products = [product for product in products if product_provider(config, product) != "manual_pdf"]
         delay = get_delay_seconds(config)
 
@@ -2544,13 +2551,21 @@ def refresh_worker(product_id: Optional[str] = None, refresh_kind: str = "manual
             progress["finished_at"] = now_iso()
 
 
-def start_refresh(product_id: Optional[str] = None, refresh_kind: str = "manual") -> bool:
+def start_refresh(
+    product_id: Optional[str] = None,
+    refresh_kind: str = "manual",
+    provider_ids: Optional[List[str]] = None,
+) -> bool:
     global refresh_thread
     with state_lock:
         if progress.get("running"):
             return False
         progress.update({"running": True, "done": 0, "total": 0, "error": None})
-        refresh_thread = threading.Thread(target=refresh_worker, args=(product_id, refresh_kind), daemon=True)
+        refresh_thread = threading.Thread(
+            target=refresh_worker,
+            args=(product_id, refresh_kind, provider_ids),
+            daemon=True,
+        )
         refresh_thread.start()
     return True
 
@@ -3580,7 +3595,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         )
 
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
-    notice_html = f'<div class="notice">{escape(notice)}</div>' if notice else ""
+    notice_html = f'<div class="notice" data-flash-notice>{escape(notice)}</div>' if notice else ""
     active_products = [product for product in products if product_enabled(product)]
     progress_hidden = "" if progress.get("running") else " hidden"
     return f"""<!doctype html>
@@ -3965,6 +3980,23 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         '</div>'
         for info in manual_pdf_reader.pdf_infos()
     ) or '<div class="small">Noch keine manuellen PDFs hochgeladen.</div>'
+    all_provider_choices = provider_choices()
+    refresh_provider_rows = [
+        '<label class="toggle-line"><input type="checkbox" name="provider_ids" value="__shops__"> Alle Shops</label>'
+    ]
+    for choice in sorted(all_provider_choices, key=lambda item: (str(item.get("kind") or ""), str(item["label"]).casefold())):
+        kind_text = "Prospekt" if choice.get("kind") == "prospect" else "Shop"
+        refresh_provider_rows.append(
+            '<label class="toggle-line">'
+            f'<input type="checkbox" name="provider_ids" value="{escape(choice["id"])}"> '
+            f'{escape(choice["label"])} <span class="small">({escape(kind_text)})</span>'
+            '</label>'
+        )
+    refresh_provider_options = "".join(refresh_provider_rows)
+    settings_progress_hidden = "" if progress.get("running") else " hidden"
+    settings_progress_pct = 0
+    if progress.get("total"):
+        settings_progress_pct = min(100, int((progress.get("done", 0) / progress["total"]) * 100))
     browser_cache_rows = "".join(
         (
             lambda runtime: (
@@ -4101,6 +4133,11 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     </section>
     <section class="panel" data-settings-panel="queries">
       <h2>Abfragen</h2>
+      <section class="settings-card settings-card-full" data-settings-progress-box{settings_progress_hidden}>
+        <h3>Aktualisierung</h3>
+        <div class="small" data-settings-progress-text>{escape(str(progress.get("current_product_name") or "Wartet"))}</div>
+        <div class="progress-line"><div data-settings-progress-bar style="--pct: {settings_progress_pct}%"></div></div>
+      </section>
       <form method="post" action="/settings">
         <div class="settings-grid">
           <div class="settings-card">
@@ -4135,6 +4172,17 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         <div class="actions settings-actions">
           <button class="primary" type="submit">Speichern</button>
           <a class="button" href="/">Abbrechen</a>
+        </div>
+      </form>
+      <form method="post" action="/settings/refresh-providers" data-provider-refresh-form>
+        <div class="settings-card settings-card-full" style="margin-top: 12px">
+          <h3>Anbieter aktualisieren</h3>
+          <div class="small">Aktualisiert nur die ausgewählten Anbieter. Das ist nach einem Backup-Import sinnvoll, wenn PDF-Bilder oder Preise neu erzeugt werden sollen.</div>
+          <div class="market-list compact-list" style="margin-top: 12px">{refresh_provider_options}</div>
+          <div class="notice" data-provider-refresh-status hidden style="margin-top: 10px">Aktualisierung wird gestartet...</div>
+          <div class="actions settings-actions">
+            <button class="primary" type="submit">{icon('refresh')} Ausgewählte Anbieter aktualisieren</button>
+          </div>
         </div>
       </form>
     </section>
@@ -4402,6 +4450,9 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
   <script>
     function showBackupStatus(message, selector) {{
       const textMessage = message || 'Vorgang läuft...';
+      document.querySelectorAll('[data-flash-notice]').forEach((notice) => {{
+        notice.hidden = true;
+      }});
       document.querySelectorAll(selector || '[data-backup-status], [data-restore-status]').forEach((status) => {{
         status.hidden = false;
         status.textContent = textMessage;
@@ -4428,8 +4479,61 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     }});
 
     document.querySelectorAll('[data-backup-restore-form]').forEach((form) => {{
-      form.addEventListener('submit', () => {{
+      form.addEventListener('submit', (event) => {{
         showBackupStatus('Backup wird wiederhergestellt. PDFs und Suchwörter werden verarbeitet...', '[data-restore-status]');
+        if (form.dataset.restoreSubmitting === 'true') return;
+        event.preventDefault();
+        form.dataset.restoreSubmitting = 'true';
+        const button = event.submitter || form.querySelector('button[type="submit"], button:not([type])');
+        if (button) {{
+          button.disabled = true;
+          button.textContent = 'Bitte warten...';
+        }}
+        requestAnimationFrame(() => {{
+          window.setTimeout(() => HTMLFormElement.prototype.submit.call(form), 120);
+        }});
+      }});
+    }});
+
+    async function pollSettingsProgress() {{
+      const box = document.querySelector('[data-settings-progress-box]');
+      if (!box) return;
+      try {{
+        const response = await fetch('/api/progress', {{cache: 'no-store'}});
+        const currentProgress = await response.json();
+        const bar = document.querySelector('[data-settings-progress-bar]');
+        const text = document.querySelector('[data-settings-progress-text]');
+        const total = currentProgress.total || 0;
+        const done = currentProgress.done || 0;
+        const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+        if (bar) bar.style.setProperty('--pct', `${{pct}}%`);
+        if (text) {{
+          text.textContent = currentProgress.running
+            ? (total ? `Aktualisiere ${{Math.min(done + 1, total)}}/${{total}}: ${{currentProgress.current_product_name || ''}}` : 'Aktualisierung startet...')
+            : (currentProgress.error ? `Fehler: ${{currentProgress.error}}` : 'Aktualisierung abgeschlossen.');
+        }}
+        const wasVisible = !box.hidden;
+        box.hidden = !currentProgress.running && !currentProgress.error && !wasVisible;
+        if (currentProgress.running) window.setTimeout(pollSettingsProgress, 900);
+      }} catch (error) {{
+        window.setTimeout(pollSettingsProgress, 2000);
+      }}
+    }}
+    pollSettingsProgress();
+
+    document.querySelectorAll('[data-provider-refresh-form]').forEach((form) => {{
+      form.addEventListener('submit', () => {{
+        document.querySelectorAll('[data-provider-refresh-status]').forEach((status) => {{
+          status.hidden = false;
+          status.textContent = 'Aktualisierung wird gestartet...';
+        }});
+        const box = document.querySelector('[data-settings-progress-box]');
+        if (box) box.hidden = false;
+        const button = form.querySelector('button[type="submit"], button:not([type])');
+        if (button) {{
+          button.disabled = true;
+          button.textContent = 'Bitte warten...';
+        }}
       }});
     }});
 
@@ -4635,6 +4739,27 @@ def save_settings() -> Response:
     return redirect(url_for("settings_page", _anchor=anchor))
 
 
+@app.post("/settings/refresh-providers")
+def refresh_selected_providers() -> Response:
+    selected = request.form.getlist("provider_ids")
+    choices = provider_choices()
+    valid_ids = {choice["id"] for choice in choices}
+    provider_ids: List[str] = []
+    if "__shops__" in selected:
+        provider_ids.extend(choice["id"] for choice in choices if choice.get("kind") == "shop")
+    provider_ids.extend(provider_id for provider_id in selected if provider_id in valid_ids)
+    provider_ids = sorted(set(provider_ids), key=lambda provider_id: provider_label(provider_id).casefold())
+    if not provider_ids:
+        set_notice("Bitte mindestens einen Anbieter auswählen.")
+        return redirect(url_for("settings_page", _anchor="queries"))
+    labels = ", ".join(provider_label(provider_id) for provider_id in provider_ids)
+    if start_refresh(refresh_kind="manual", provider_ids=provider_ids):
+        set_notice(f"Aktualisierung gestartet: {labels}")
+    else:
+        set_notice("Es läuft bereits eine Aktualisierung.")
+    return redirect(url_for("settings_page", _anchor="queries"))
+
+
 @app.get("/settings/mqtt/preview")
 def mqtt_preview_api() -> Response:
     config = load_config()
@@ -4781,10 +4906,6 @@ def confirm_backup_import() -> Response:
         return redirect(url_for("settings_page", _anchor="backup"))
     try:
         restored = restore_backup_file(backup_path, restore_config, restore_state, restore_pdfs)
-        if restore_pdfs:
-            refreshed = refresh_provider_products(load_config(), "manual_pdf")
-            if refreshed:
-                restored.append(f"{refreshed} PDF-Suchwörter neu geprüft")
     except Exception as exc:
         set_notice(f"Backup konnte nicht wiederhergestellt werden: {exc}")
         return redirect(url_for("settings_page", _anchor="backup"))
@@ -4792,7 +4913,11 @@ def confirm_backup_import() -> Response:
     with state_lock:
         state = load_state()
         state.pop("backup_import", None)
-        state["notice"] = "Backup wiederhergestellt: " + (", ".join(restored) if restored else "keine Daten geändert")
+        state["notice"] = (
+            "Backup wiederhergestellt: "
+            + (", ".join(restored) if restored else "keine Daten geändert")
+            + ". Artikel wurden nicht automatisch aktualisiert. Nutze Settings > Abfragen, um Anbieter gezielt neu zu prüfen."
+        )
         save_state(state)
     return redirect(url_for("settings_page", _anchor="backup"))
 
