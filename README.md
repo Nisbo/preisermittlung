@@ -75,7 +75,8 @@ weiterverwendet.
 
 ## Lokale Daten
 
-Diese Dateien und Ordner sind lokale Runtime-Daten und gehören nicht ins Git-Repo:
+Diese Dateien und Ordner entstehen erst auf deiner Installation und gehören
+nicht ins Git-Repo:
 
 - `config.yaml`
 - `state.json`
@@ -86,7 +87,10 @@ Diese Dateien und Ordner sind lokale Runtime-Daten und gehören nicht ins Git-Re
 - `.playwright-browsers/`
 - `tmp/`
 
-Updates dürfen diese Dateien nicht überschreiben.
+Updates dürfen diese Dateien nicht überschreiben. `config.yaml`, `state.json`
+und `manual_pdfs/` enthalten Nutzerdaten. `generated/`, `.browser-cache/`,
+`.pdf-cache/`, `.playwright-browsers/` und `tmp/` sind Cache- oder
+Laufzeitdaten und können bei Bedarf neu erzeugt werden.
 
 ## Aufbau der `config.yaml`
 
@@ -108,7 +112,7 @@ nächsten Speichern in die `markets`/`products`-Struktur übernommen.
 
 ## Update per Git
 
-Wenn die App per Git installiert wurde:
+Empfohlen ist das Update-Script auf dem Server:
 
 ```bash
 cd /opt/preisermittlung
@@ -120,6 +124,14 @@ und startet den systemd-Service neu. Lokale Runtime-Daten werden nicht gelöscht
 oder überschrieben.
 Auch das Update-Script muss als root laufen. Falls du nicht bereits root bist,
 nutze `sudo ./scripts/update.sh`.
+
+In der Weboberfläche gibt es unter `Settings > Update` zusätzlich einen ersten
+GUI-Weg für `git fetch --all --tags` und `git pull --ff-only`. Dieser zeigt die
+Git-Ausgabe direkt in der App an und ist hilfreich, um Rechte- oder Git-Fehler
+zu sehen. Er installiert aber keine neuen Abhängigkeiten und startet den
+systemd-Dienst nicht neu. Wenn sich Requirements, Playwright oder
+Systemdienste ändern, bleibt das Server-Script der richtige Weg. Vor Updates
+ist ein Backup über `Settings > Backup` empfehlenswert.
 
 ## Deinstallation
 

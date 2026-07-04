@@ -5,6 +5,7 @@ import io
 import re
 import resource
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -48,7 +49,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.6-dev"
+APP_VERSION = "0.1.7-dev"
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
@@ -1857,6 +1858,59 @@ def render_notice_html(message: Optional[str]) -> str:
     )
     content = content.replace("\n", "<br>")
     return f'<div class="notice" data-flash-notice>{content}</div>'
+
+
+def run_git_pull_update() -> Dict[str, Any]:
+    app_dir = Path(__file__).parent
+    if not app_dir.joinpath(".git").exists():
+        return {
+            "ok": False,
+            "finished_at": now_iso(),
+            "message": "Diese Installation ist kein Git-Checkout.",
+            "output": "Ordner .git wurde nicht gefunden.",
+        }
+    commands = [
+        ["git", "fetch", "--all", "--tags"],
+        ["git", "pull", "--ff-only"],
+    ]
+    output_parts: List[str] = []
+    for command in commands:
+        label = " ".join(command)
+        output_parts.append(f"$ {label}")
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=app_dir,
+                text=True,
+                capture_output=True,
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output_parts.append(f"Timeout nach {exc.timeout} Sekunden.")
+            return {
+                "ok": False,
+                "finished_at": now_iso(),
+                "message": f"Update abgebrochen: {label} hat zu lange gedauert.",
+                "output": "\n".join(output_parts)[-20000:],
+            }
+        combined_output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
+        if combined_output:
+            output_parts.append(combined_output)
+        output_parts.append(f"Exit-Code: {completed.returncode}")
+        if completed.returncode != 0:
+            return {
+                "ok": False,
+                "finished_at": now_iso(),
+                "message": f"Update fehlgeschlagen bei: {label}",
+                "output": "\n".join(output_parts)[-20000:],
+            }
+    return {
+        "ok": True,
+        "finished_at": now_iso(),
+        "message": "Git Pull erfolgreich ausgeführt.",
+        "output": "\n".join(output_parts)[-20000:],
+    }
 
 
 def set_product_mqtt_notice(product_id: str, message: str) -> None:
@@ -3996,6 +4050,18 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         ensure_ascii=False,
         indent=2,
     )
+    update_result = state.get("update_result") or {}
+    update_result_html = ""
+    if update_result:
+        update_class = "notice" if update_result.get("ok") else "error"
+        update_output = str(update_result.get("output") or "").strip()
+        update_result_html = (
+            f'<div class="{update_class}" style="margin-top: 12px">'
+            f'<strong>{escape(str(update_result.get("message") or "Update-Ausgabe"))}</strong><br>'
+            f'<span class="small">Zeitpunkt: {escape(format_datetime_de(update_result.get("finished_at")))}</span>'
+            f'{f"<pre><code>{escape(update_output)}</code></pre>" if update_output else ""}'
+            '</div>'
+        )
     manual_pdf_rows = "".join(
         '<div class="market-row">'
         f'<div><strong>{escape(info["name"])}</strong><br>'
@@ -4041,7 +4107,9 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         f'{prospect_refresh_options}'
         '</div>'
     )
-    settings_progress_hidden = "" if progress.get("running") else " hidden"
+    refresh_running = bool(progress.get("running"))
+    refresh_running_disabled = " disabled" if refresh_running else ""
+    settings_progress_hidden = "" if refresh_running else " hidden"
     settings_progress_pct = 0
     if progress.get("total"):
         settings_progress_pct = min(100, int((progress.get("done", 0) / progress["total"]) * 100))
@@ -4226,10 +4294,11 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         <div class="settings-card settings-card-full" style="margin-top: 12px">
           <h3>Anbieter aktualisieren</h3>
           <div class="small">Aktualisiert nur die ausgewählten Anbieter. Das ist nach einem Backup-Import sinnvoll, wenn PDF-Bilder oder Preise neu erzeugt werden sollen.</div>
+          <div class="small">PDF-Prospekte können beim ersten Lauf länger dauern, weil Seiten gelesen, Treffer gesucht und Vorschaubilder erzeugt oder aus dem Cache geladen werden.</div>
           <div class="market-list compact-list" style="margin-top: 12px">{refresh_provider_options}</div>
-          <div class="notice" data-provider-refresh-status hidden style="margin-top: 10px">Aktualisierung wird gestartet...</div>
+          <div class="notice" data-provider-refresh-status {'hidden' if not refresh_running else ''} style="margin-top: 10px">{'Es läuft bereits eine Aktualisierung.' if refresh_running else 'Aktualisierung wird gestartet...'}</div>
           <div class="actions settings-actions">
-            <button class="primary" type="submit">{icon('refresh')} Ausgewählte Anbieter aktualisieren</button>
+            <button class="primary" type="submit"{refresh_running_disabled}>{icon('refresh')} Ausgewählte Anbieter aktualisieren</button>
           </div>
         </div>
       </form>
@@ -4480,12 +4549,19 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         <div class="settings-card">
           <h3>Installierte Version</h3>
           <div class="metric"><span>{escape(APP_NAME)}</span><strong>v{escape(APP_VERSION)}</strong></div>
-          <div class="small">Diese Anzeige kommt aus der App selbst. Später kann hier gegen GitHub-Releases geprüft werden.</div>
+          <div class="small">Diese Anzeige kommt aus der aktuell laufenden App.</div>
         </div>
-        <div class="settings-card">
-          <h3>Geplante Update-Wege</h3>
-          <div class="small">Release-Update: installiert eine veröffentlichte Version mit Versionsnummer.</div>
-          <div class="small">Git-Pull-Update: zieht den neuesten Stand von main für Tests oder schnelle Korrekturen.</div>
+        <div class="settings-card settings-card-full">
+          <h3>Git-Pull-Update</h3>
+          <div class="small">Führt <code>git fetch --all --tags</code> und <code>git pull --ff-only</code> im App-Verzeichnis aus. Vor einem Update ist ein Backup empfehlenswert.</div>
+          <div class="small">Dieser GUI-Weg installiert keine neuen Python- oder System-Abhängigkeiten und startet den systemd-Dienst nicht neu. Wenn Abhängigkeiten geändert wurden oder der Pull wegen Rechten fehlschlägt, nutze auf dem Server <code>./scripts/update.sh</code> als root.</div>
+          <form method="post" action="/settings/update/git-pull" style="margin-top: 12px" data-git-update-form>
+            <div class="notice" data-git-update-status hidden>Git Pull wird ausgeführt...</div>
+            <div class="actions settings-actions">
+              <button class="primary" type="submit">{icon('download')} Git Pull ausführen</button>
+            </div>
+          </form>
+          {update_result_html}
         </div>
         <div class="settings-card settings-card-full">
           <h3>Config-Schutz</h3>
@@ -4560,6 +4636,15 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             ? (total ? `Aktualisiere ${{Math.min(done + 1, total)}}/${{total}}: ${{currentProgress.current_product_name || ''}}` : 'Aktualisierung startet...')
             : (currentProgress.error ? `Fehler: ${{currentProgress.error}}` : 'Aktualisierung abgeschlossen.');
         }}
+        document.querySelectorAll('[data-provider-refresh-form] button[type="submit"], [data-provider-refresh-form] input').forEach((element) => {{
+          element.disabled = !!currentProgress.running;
+        }});
+        document.querySelectorAll('[data-provider-refresh-status]').forEach((status) => {{
+          if (currentProgress.running) {{
+            status.hidden = false;
+            status.textContent = 'Es läuft bereits eine Aktualisierung.';
+          }}
+        }});
         const wasVisible = !box.hidden;
         box.hidden = !currentProgress.running && !currentProgress.error && !wasVisible;
         if (currentProgress.running) window.setTimeout(pollSettingsProgress, 900);
@@ -4614,6 +4699,20 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         }});
         const box = document.querySelector('[data-settings-progress-box]');
         if (box) box.hidden = false;
+        const button = form.querySelector('button[type="submit"], button:not([type])');
+        if (button) {{
+          button.disabled = true;
+          button.textContent = 'Bitte warten...';
+        }}
+      }});
+    }});
+
+    document.querySelectorAll('[data-git-update-form]').forEach((form) => {{
+      form.addEventListener('submit', () => {{
+        document.querySelectorAll('[data-git-update-status]').forEach((status) => {{
+          status.hidden = false;
+          status.textContent = 'Git Pull wird ausgeführt...';
+        }});
         const button = form.querySelector('button[type="submit"], button:not([type])');
         if (button) {{
           button.disabled = true;
@@ -4847,6 +4946,17 @@ def refresh_selected_providers() -> Response:
     else:
         set_notice("Es läuft bereits eine Aktualisierung.")
     return redirect(url_for("settings_page", _anchor="queries"))
+
+
+@app.post("/settings/update/git-pull")
+def settings_git_pull_update() -> Response:
+    result = run_git_pull_update()
+    with state_lock:
+        state = load_state()
+        state["update_result"] = result
+        state["notice"] = result.get("message") or ("Git Pull erfolgreich." if result.get("ok") else "Git Pull fehlgeschlagen.")
+        save_state(state)
+    return redirect(url_for("settings_page", _anchor="updates"))
 
 
 @app.get("/settings/mqtt/preview")
