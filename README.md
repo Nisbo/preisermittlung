@@ -30,7 +30,7 @@ auf `127.0.0.1:5050`.
 
 ```bash
 cd /opt
-git clone https://github.com/DEINNAME/preisermittlung.git
+git clone https://github.com/Nisbo/preisermittlung.git
 cd preisermittlung
 sudo bash scripts/install_debian.sh
 ```
