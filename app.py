@@ -48,7 +48,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.2-dev"
+APP_VERSION = "0.1.3-dev"
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
@@ -999,6 +999,19 @@ body[data-theme="dark"] .visual-price-map {
 
 SCRIPT = """
 let refreshWasRunning = false;
+function showBusyOverlay(message) {
+  const textMessage = message || 'Vorgang läuft...';
+  const overlay = document.querySelector('[data-busy-overlay]');
+  if (overlay) {
+    overlay.hidden = false;
+    const text = overlay.querySelector('[data-busy-overlay-text]');
+    if (text) text.textContent = textMessage;
+  }
+  document.querySelectorAll('[data-upload-status-global], [data-backup-status], [data-restore-status]').forEach((status) => {
+    status.hidden = false;
+    status.textContent = textMessage;
+  });
+}
 async function pollProgress() {
   try {
     const response = await fetch('/api/progress', {cache: 'no-store'});
@@ -1214,20 +1227,7 @@ document.querySelectorAll('form').forEach((form) => {
     }
     if (form.dataset.backupUploadForm !== undefined) {
       const message = 'Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...';
-      const overlay = document.querySelector('[data-busy-overlay]');
-      if (overlay) {
-        overlay.hidden = false;
-        const text = overlay.querySelector('[data-busy-overlay-text]');
-        if (text) text.textContent = message;
-      }
-      form.querySelectorAll('[data-backup-status]').forEach((status) => {
-        status.hidden = false;
-        status.textContent = message;
-      });
-      document.querySelectorAll('[data-upload-status-global]').forEach((status) => {
-        status.hidden = false;
-        status.textContent = message;
-      });
+      showBusyOverlay(message);
       window.scrollTo({top: 0, behavior: 'smooth'});
       if (form.dataset.backupSubmitting !== 'true') {
         event.preventDefault();
@@ -1808,6 +1808,12 @@ def restore_backup_file(path: Path, restore_config: bool, restore_state: bool, r
                 manual_pdf_reader.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
                 for existing_pdf in manual_pdf_reader.UPLOAD_DIR.glob("*.pdf"):
                     existing_pdf.unlink()
+                manual_pdf_reader.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+                for existing_image in manual_pdf_reader.GENERATED_DIR.glob("*.png"):
+                    try:
+                        existing_image.unlink()
+                    except OSError:
+                        pass
                 for name in sorted(pdf_names):
                     atomic_write_bytes(manual_pdf_reader.UPLOAD_DIR / Path(name).name, archive.read(name))
                 restored.append(f"{len(pdf_names)} PDF-Datei(en)")
@@ -4004,7 +4010,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             <h3>Backup wiederherstellen</h3>
             <div class="warning">Achtung: Ausgewählte Bereiche werden mit dem Inhalt der ZIP-Datei überschrieben.</div>
             <div class="small" style="margin-top: 8px">Datei: <strong>{escape(str(backup_import.get("filename") or "Backup.zip"))}</strong><br>Erkannt: {escape(", ".join(backup_parts))}</div>
-            <form method="post" action="/backup/import/confirm" style="margin-top: 12px">
+            <form method="post" action="/backup/import/confirm" style="margin-top: 12px" data-backup-restore-form>
               <input type="hidden" name="token" value="{escape(str(backup_import.get("token")))}">
               <div class="settings-grid">
                 <div class="settings-card">
@@ -4020,8 +4026,9 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
                   <div class="small">Ersetzt die vorhandenen PDF-Dateien im Ordner <code>manual_pdfs</code> durch die PDFs aus dem Backup.</div>
                 </div>
               </div>
+              <div class="notice" data-restore-status hidden style="margin-top: 10px">Backup wird wiederhergestellt. PDFs und Suchwörter werden verarbeitet...</div>
               <div class="actions settings-actions">
-                <button class="danger" type="submit">{icon('refresh')} Ausgewählte Bereiche wiederherstellen</button>
+                <button class="danger" type="submit" onclick="showBusyOverlay('Backup wird wiederhergestellt. PDFs und Suchwörter werden verarbeitet...')">{icon('refresh')} Ausgewählte Bereiche wiederherstellen</button>
                 <a class="button" href="/backup/import/cancel">Abbrechen</a>
               </div>
             </form>
@@ -4360,11 +4367,11 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           <form method="post" action="/backup/import/analyze" enctype="multipart/form-data" style="margin-top: 12px" data-backup-upload-form>
             <div class="field">
               <label>Backup-ZIP</label>
-              <input type="file" name="backup_file" accept="application/zip,.zip" required>
+              <input type="file" name="backup_file" accept="application/zip,.zip" required onchange="if(this.files.length) showBusyOverlay('Backup ausgewählt. Klicke auf Backup prüfen, um die Datei hochzuladen und zu prüfen.')">
             </div>
             <div class="notice" data-backup-status hidden style="margin-top: 10px">Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...</div>
             <div class="actions settings-actions">
-              <button type="submit">{icon('upload')} Backup prüfen</button>
+              <button type="submit" onclick="showBusyOverlay('Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...')">{icon('upload')} Backup prüfen</button>
             </div>
           </form>
         </div>
@@ -4393,6 +4400,45 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     <footer class="app-footer"><span>{escape(APP_NAME)}</span><span>v{escape(APP_VERSION)}</span></footer>
   </main>
   <script>
+    function showBusyOverlay(message) {{
+      const textMessage = message || 'Vorgang läuft...';
+      const overlay = document.querySelector('[data-busy-overlay]');
+      if (overlay) {{
+        overlay.hidden = false;
+        const text = overlay.querySelector('[data-busy-overlay-text]');
+        if (text) text.textContent = textMessage;
+      }}
+      document.querySelectorAll('[data-upload-status-global], [data-backup-status], [data-restore-status]').forEach((status) => {{
+        status.hidden = false;
+        status.textContent = textMessage;
+      }});
+    }}
+
+    document.querySelectorAll('[data-backup-upload-form]').forEach((form) => {{
+      form.addEventListener('submit', (event) => {{
+        const message = 'Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...';
+        showBusyOverlay(message);
+        if (form.dataset.backupSubmitting === 'true') return;
+        event.preventDefault();
+        form.dataset.backupSubmitting = 'true';
+        const button = event.submitter || form.querySelector('button[type="submit"], button:not([type])');
+        if (button) {{
+          button.disabled = true;
+          button.dataset.originalText = button.textContent;
+          button.textContent = 'Bitte warten...';
+        }}
+        requestAnimationFrame(() => {{
+          window.setTimeout(() => HTMLFormElement.prototype.submit.call(form), 120);
+        }});
+      }});
+    }});
+
+    document.querySelectorAll('[data-backup-restore-form]').forEach((form) => {{
+      form.addEventListener('submit', () => {{
+        showBusyOverlay('Backup wird wiederhergestellt. PDFs und Suchwörter werden verarbeitet...');
+      }});
+    }});
+
     const userAgentInput = document.getElementById('user-agent-input');
     document.getElementById('use-current-user-agent')?.addEventListener('click', () => {{
       userAgentInput.value = navigator.userAgent || '';
