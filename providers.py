@@ -115,7 +115,7 @@ def product_provider(config: Dict[str, Any], product: Dict[str, Any]) -> str:
     for market in rewe_reader.markets_from_config(config):
         if market.get("market_id") == market_id:
             return market_provider(market)
-    return normalize_provider((config.get("store") or {}).get("provider"))
+    return normalize_provider(DEFAULT_PROVIDER)
 
 
 def provider_uses_markets(provider: str) -> bool:

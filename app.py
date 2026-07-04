@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import io
 import re
 import resource
 import socket
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
+import uuid
+import zipfile
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -42,6 +46,7 @@ from readers.rewe_reader import markets_from_config
 
 STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
+BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
 APP_VERSION = "0.1.0-dev"
 DEFAULT_CATEGORY_ID = "allgemein"
@@ -863,6 +868,24 @@ body[data-theme="dark"] .visual-price-map {
   padding: 12px;
   background: color-mix(in srgb, var(--panel) 96%, var(--accent) 4%);
 }
+.soft-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--panel) 98%, var(--fg) 2%);
+}
+.soft-panel h4 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.soft-panel pre {
+  overflow: auto;
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 92%, var(--fg) 8%);
+}
 .settings-card .field:last-child {
   margin-bottom: 0;
 }
@@ -1163,6 +1186,12 @@ document.querySelectorAll('form').forEach((form) => {
       });
       if (!form.dataset.noScroll) window.scrollTo({top: 0, behavior: 'smooth'});
     }
+    if (form.dataset.backupUploadForm !== undefined) {
+      form.querySelectorAll('[data-backup-status]').forEach((status) => {
+        status.hidden = false;
+        status.textContent = 'Backup wird hochgeladen und geprüft...';
+      });
+    }
     const submitter = event.submitter || document.activeElement;
     if (submitter && submitter.name && !form.querySelector(`input[type="hidden"][data-submit-proxy="${submitter.name}"]`)) {
       const proxy = document.createElement('input');
@@ -1385,6 +1414,8 @@ def icon(name: str) -> str:
         "trash": '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
         "plus": '<path d="M12 5v14"/><path d="M5 12h14"/>',
         "copy": '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+        "download": '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
+        "upload": '<path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/>',
         "search": '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
         "home": '<path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>',
         "list": '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
@@ -1574,14 +1605,156 @@ def unique_category_id(categories: List[Dict[str, str]], name: str) -> str:
     return f"{base}_{index}"
 
 
+def default_state() -> Dict[str, Any]:
+    return {"products": {}, "last_refresh_started_at": None, "last_refresh_finished_at": None}
+
+
 def load_state() -> Dict[str, Any]:
     if not STATE_PATH.exists():
-        return {"products": {}, "last_refresh_started_at": None, "last_refresh_finished_at": None}
-    return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        return default_state()
+    try:
+        raw_state = STATE_PATH.read_text(encoding="utf-8")
+        if not raw_state.strip():
+            return default_state()
+        state = json.loads(raw_state)
+    except (OSError, json.JSONDecodeError):
+        return default_state()
+    if not isinstance(state, dict):
+        return default_state()
+    state.setdefault("products", {})
+    state.setdefault("last_refresh_started_at", None)
+    state.setdefault("last_refresh_finished_at", None)
+    return state
 
 
 def save_state(state: Dict[str, Any]) -> None:
-    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=STATE_PATH.parent,
+        prefix=".state.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(payload)
+        temp_path = Path(handle.name)
+    temp_path.replace(STATE_PATH)
+
+
+def atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "wb",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(payload)
+        temp_path = Path(handle.name)
+    temp_path.replace(path)
+
+
+def backup_manifest() -> Dict[str, Any]:
+    return {
+        "app": APP_NAME,
+        "version": APP_VERSION,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "contains": {
+            "config": CONFIG_PATH.exists(),
+            "state": STATE_PATH.exists(),
+            "manual_pdfs": manual_pdf_reader.UPLOAD_DIR.exists(),
+        },
+    }
+
+
+def create_backup_zip(include_config: bool, include_state: bool, include_pdfs: bool) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("metadata.json", json.dumps(backup_manifest(), ensure_ascii=False, indent=2) + "\n")
+        if include_config and CONFIG_PATH.exists():
+            archive.write(CONFIG_PATH, "config.yaml")
+        if include_state and STATE_PATH.exists():
+            archive.write(STATE_PATH, "state.json")
+        if include_pdfs and manual_pdf_reader.UPLOAD_DIR.exists():
+            for pdf_path in sorted(manual_pdf_reader.UPLOAD_DIR.glob("*.pdf"), key=lambda item: item.name.casefold()):
+                archive.write(pdf_path, f"manual_pdfs/{pdf_path.name}")
+    return buffer.getvalue()
+
+
+def analyze_backup_file(path: Path) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "config": False,
+        "state": False,
+        "pdfs": [],
+        "metadata": {},
+    }
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        result["config"] = "config.yaml" in names
+        result["state"] = "state.json" in names
+        result["pdfs"] = sorted(
+            Path(name).name
+            for name in names
+            if name.startswith("manual_pdfs/") and name.lower().endswith(".pdf") and Path(name).name
+        )
+        if "metadata.json" in names:
+            try:
+                result["metadata"] = json.loads(archive.read("metadata.json").decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                result["metadata"] = {}
+    return result
+
+
+def backup_has_components(info: Dict[str, Any]) -> bool:
+    return bool(info.get("config") or info.get("state") or info.get("pdfs"))
+
+
+def cleanup_old_backup_imports(max_age_seconds: int = 24 * 60 * 60) -> None:
+    if not BACKUP_IMPORT_PATH.exists():
+        return
+    cutoff = time.time() - max_age_seconds
+    for backup_path in BACKUP_IMPORT_PATH.glob("*.zip"):
+        try:
+            if backup_path.stat().st_mtime < cutoff:
+                backup_path.unlink()
+        except OSError:
+            continue
+
+
+def remove_pending_backup_import(state: Dict[str, Any]) -> None:
+    backup_import = state.pop("backup_import", None) or {}
+    token = backup_import.get("token")
+    if token and re.fullmatch(r"[0-9a-f]{32}", str(token)):
+        (BACKUP_IMPORT_PATH / f"{token}.zip").unlink(missing_ok=True)
+
+
+def restore_backup_file(path: Path, restore_config: bool, restore_state: bool, restore_pdfs: bool) -> List[str]:
+    restored: List[str] = []
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+        if restore_config and "config.yaml" in names:
+            atomic_write_bytes(CONFIG_PATH, archive.read("config.yaml"))
+            restored.append("config.yaml")
+        if restore_state and "state.json" in names:
+            atomic_write_bytes(STATE_PATH, archive.read("state.json"))
+            restored.append("state.json")
+        if restore_pdfs:
+            pdf_names = [
+                name
+                for name in names
+                if name.startswith("manual_pdfs/") and name.lower().endswith(".pdf") and Path(name).name
+            ]
+            if pdf_names:
+                manual_pdf_reader.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+                for existing_pdf in manual_pdf_reader.UPLOAD_DIR.glob("*.pdf"):
+                    existing_pdf.unlink()
+                for name in sorted(pdf_names):
+                    atomic_write_bytes(manual_pdf_reader.UPLOAD_DIR / Path(name).name, archive.read(name))
+                restored.append(f"{len(pdf_names)} PDF-Datei(en)")
+    return restored
 
 
 def set_notice(message: str) -> None:
@@ -2238,7 +2411,6 @@ def refresh_worker(product_id: Optional[str] = None, refresh_kind: str = "manual
     try:
         config = load_config()
         configure_user_agent((config.get("settings") or {}).get("user_agent"))
-        store_config = config["store"]
         products = config.get("products") or []
         if product_id:
             products = [product for product in products if product["id"] == product_id]
@@ -2503,7 +2675,6 @@ def render_product_table(rows: List[str]) -> str:
 
 
 def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[str] = None) -> str:
-    store = config.get("store") or {}
     settings = config.get("settings") or {}
     markets = markets_from_config(config)
     all_products = products_with_state(config)
@@ -3605,7 +3776,6 @@ def render_install_info_card() -> str:
         ("/etc/systemd/system/preisermittlung.service", "systemd-Service für diese App"),
         ("/etc/nginx/sites-available/preisermittlung.conf", "nginx-Site-Konfiguration"),
         ("/etc/nginx/sites-enabled/preisermittlung.conf", "nginx-Site-Aktivierung/Symlink"),
-        ("nginx.service", "kommt vom Debian-nginx-Paket, wird nicht von Preisermittlung erstellt"),
     ]
 
     local_rows = "".join(
@@ -3627,7 +3797,7 @@ def render_install_info_card() -> str:
     return f"""
         <div class="settings-card settings-card-full">
           <h3>Installationsinfo</h3>
-          <div class="small">Diese Übersicht beschreibt, was die Debian-Installation anlegt oder installiert. Wenn Installscript, Update-Script oder Abhängigkeiten geändert werden, muss diese Liste mit gepflegt werden.</div>
+          <div class="small">Diese Übersicht zeigt, welche Dateien, Dienste und Pakete die Debian-Installation verwendet. App-lokale Dateien liegen gesammelt im Installationsverzeichnis; Systempakete können auch von anderen Programmen stammen oder dort weiter gebraucht werden.</div>
           <div class="table-wrap" style="margin-top: 12px">
             <table class="info-table">
               <thead><tr><th colspan="3">App-lokal unter <code>{escape(str(app_dir))}</code></th></tr></thead>
@@ -3646,12 +3816,12 @@ def render_install_info_card() -> str:
                 <tr>
                   <td>apt Basispakete</td>
                   <td>{escape(", ".join(apt_packages))}</td>
-                  <td>Systemweit installiert, können auch von anderen Anwendungen genutzt werden.</td>
+                  <td>Diese Pakete sind systemweit verfügbar. Einige davon waren eventuell schon vorher installiert und können auch von anderen Anwendungen benötigt werden.</td>
                 </tr>
                 <tr>
                   <td>Playwright Systembibliotheken</td>
                   <td>{escape(", ".join(playwright_deps))}</td>
-                  <td>Werden über <code>playwright install --with-deps chromium</code> geprüft oder installiert.</td>
+                  <td>Systemweite Linux-Bibliotheken für Chromium. Einige können schon vorher installiert gewesen sein und auch von Browsern, Desktop-Komponenten oder anderen Diensten benötigt werden. Deshalb nicht pauschal entfernen.</td>
                 </tr>
               </tbody>
             </table>
@@ -3662,12 +3832,20 @@ def render_install_info_card() -> str:
               <tbody>{system_rows}</tbody>
             </table>
           </div>
-          <div class="small" style="margin-top: 10px">Bei einer Deinstallation können <code>.venv</code>, <code>.playwright-browsers</code> und die App-Caches gefahrlos entfernt werden. Nutzerdaten wie <code>config.yaml</code>, <code>state.json</code>, PDFs und generierte Bilder sollten nur nach Bestätigung gelöscht werden. Systempakete sollten nicht pauschal entfernt werden; dafür eignet sich höchstens eine manuelle Prüfung mit <code>apt autoremove</code>.</div>
+          <div class="soft-panel" style="margin-top: 12px">
+            <h4>Deinstallation</h4>
+            <div class="small">Das Script <code>scripts/uninstall_debian.sh</code> stoppt den Dienst, entfernt die systemd- und nginx-Konfiguration dieser App und fragt anschließend, ob das komplette App-Verzeichnis gelöscht werden soll.</div>
+            <pre><code>cd {escape(str(app_dir))}
+./scripts/uninstall_debian.sh</code></pre>
+            <div class="small">Der Befehl muss als root laufen. Wenn du nicht per <code>su -</code> als root angemeldet bist, nutze stattdessen <code>sudo ./scripts/uninstall_debian.sh</code>.</div>
+            <div class="small">Wenn das App-Verzeichnis gelöscht wird, verschwinden auch <code>.venv</code>, <code>.playwright-browsers</code>, Cache-Dateien, hochgeladene PDFs, generierte Bilder und die lokale Konfiguration. Systempakete werden dabei nicht automatisch entfernt, weil sie schon vorher installiert gewesen sein oder von anderen Anwendungen genutzt werden können. Nicht mehr benötigte apt-Pakete kann man danach bei Bedarf manuell mit <code>sudo apt autoremove</code> prüfen.</div>
+          </div>
         </div>
     """
 
 
 def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[str] = None) -> str:
+    cleanup_old_backup_imports()
     settings = config.get("settings") or {}
     theme = current_theme(config)
     auto_enabled = get_auto_refresh_enabled(config)
@@ -3752,6 +3930,46 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         for category in settings_categories
     )
     install_info_html = render_install_info_card()
+    backup_import = state.get("backup_import") or {}
+    backup_import_info = backup_import.get("info") or {}
+    backup_pdf_count = len(backup_import_info.get("pdfs") or [])
+    backup_import_html = ""
+    if backup_import.get("token") and backup_has_components(backup_import_info):
+        backup_parts = []
+        if backup_import_info.get("config"):
+            backup_parts.append("config.yaml")
+        if backup_import_info.get("state"):
+            backup_parts.append("state.json")
+        if backup_pdf_count:
+            backup_parts.append(f"{backup_pdf_count} hochgeladene PDF-Datei(en)")
+        backup_import_html = f"""
+          <div class="settings-card settings-card-full">
+            <h3>Backup wiederherstellen</h3>
+            <div class="warning">Achtung: Ausgewählte Bereiche werden mit dem Inhalt der ZIP-Datei überschrieben.</div>
+            <div class="small" style="margin-top: 8px">Datei: <strong>{escape(str(backup_import.get("filename") or "Backup.zip"))}</strong><br>Erkannt: {escape(", ".join(backup_parts))}</div>
+            <form method="post" action="/backup/import/confirm" style="margin-top: 12px">
+              <input type="hidden" name="token" value="{escape(str(backup_import.get("token")))}">
+              <div class="settings-grid">
+                <div class="settings-card">
+                  <label class="toggle-line"><input type="checkbox" name="restore_config" value="true" {'checked' if backup_import_info.get("config") else ''} {'disabled' if not backup_import_info.get("config") else ''}> Konfiguration wiederherstellen</label>
+                  <div class="small">Überschreibt <code>config.yaml</code>, also Einstellungen, Märkte, Kategorien und Artikelliste.</div>
+                </div>
+                <div class="settings-card">
+                  <label class="toggle-line"><input type="checkbox" name="restore_state" value="true" {'checked' if backup_import_info.get("state") else ''} {'disabled' if not backup_import_info.get("state") else ''}> Artikel- und Statusliste wiederherstellen</label>
+                  <div class="small">Überschreibt <code>state.json</code>, also letzte Preise, Zeitpunkte, Status und Fortschrittsdaten.</div>
+                </div>
+                <div class="settings-card settings-card-full">
+                  <label class="toggle-line"><input type="checkbox" name="restore_pdfs" value="true" {'checked' if backup_pdf_count else ''} {'disabled' if not backup_pdf_count else ''}> Hochgeladene PDFs wiederherstellen</label>
+                  <div class="small">Ersetzt die vorhandenen PDF-Dateien im Ordner <code>manual_pdfs</code> durch die PDFs aus dem Backup.</div>
+                </div>
+              </div>
+              <div class="actions settings-actions">
+                <button class="danger" type="submit">{icon('refresh')} Ausgewählte Bereiche wiederherstellen</button>
+                <a class="button" href="/backup/import/cancel">Abbrechen</a>
+              </div>
+            </form>
+          </div>
+        """
     return f"""<!doctype html>
 <html lang="de">
 <head>
@@ -3783,6 +4001,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
       <button class="settings-tab" type="button" data-settings-tab="api">JSON-API</button>
       <button class="settings-tab" type="button" data-settings-tab="browser">Browser</button>
       <button class="settings-tab" type="button" data-settings-tab="mqtt">MQTT</button>
+      <button class="settings-tab" type="button" data-settings-tab="backup">Backup</button>
       <button class="settings-tab" type="button" data-settings-tab="updates">Update</button>
     </nav>
     <section class="panel" data-settings-panel="info">
@@ -4053,6 +4272,42 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         </div>
       </div>
     </section>
+    <section class="panel" data-settings-panel="backup">
+      <h2>Backup</h2>
+      <div class="settings-grid align-start">
+        <div class="settings-card">
+          <h3>Export</h3>
+          <div class="small">Erstellt eine ZIP-Datei mit den ausgewählten lokalen Daten. Caches und generierte Bilder werden nicht gesichert, weil sie neu erzeugt werden können.</div>
+          <form method="get" action="/backup/export" style="margin-top: 12px">
+            <label class="toggle-line"><input type="checkbox" name="config" value="true" checked> Konfigurationsdatei sichern</label>
+            <div class="small">Enthält Einstellungen, Märkte, Kategorien und Artikelliste aus <code>config.yaml</code>.</div>
+            <label class="toggle-line" style="margin-top: 10px"><input type="checkbox" name="state" value="true" checked> Artikel- und Statusliste sichern</label>
+            <div class="small">Enthält letzte Preise, Zeitpunkte und Status aus <code>state.json</code>.</div>
+            <label class="toggle-line" style="margin-top: 10px"><input type="checkbox" name="pdfs" value="true" checked> Hochgeladene PDFs sichern</label>
+            <div class="small">Enthält die Dateien aus <code>manual_pdfs</code>.</div>
+            <div class="actions settings-actions">
+              <button class="primary" type="submit">{icon('download')} Backup als ZIP herunterladen</button>
+            </div>
+          </form>
+        </div>
+        <div class="settings-card">
+          <h3>Import</h3>
+          <div class="small">Lade eine Backup-ZIP hoch. Die App prüft zuerst, was enthalten ist, und fragt danach, welche Bereiche überschrieben werden sollen.</div>
+          <div class="small">Eine geprüfte ZIP wird nur temporär gespeichert. „Abbrechen“ löscht sie wieder; nach einer Wiederherstellung wird sie ebenfalls entfernt.</div>
+          <form method="post" action="/backup/import/analyze" enctype="multipart/form-data" style="margin-top: 12px" data-backup-upload-form>
+            <div class="field">
+              <label>Backup-ZIP</label>
+              <input type="file" name="backup_file" accept="application/zip,.zip" required>
+            </div>
+            <div class="notice" data-backup-status hidden style="margin-top: 10px">Backup wird hochgeladen und geprüft...</div>
+            <div class="actions settings-actions">
+              <button type="submit">{icon('upload')} Backup prüfen</button>
+            </div>
+          </form>
+        </div>
+        {backup_import_html}
+      </div>
+    </section>
     <section class="panel" data-settings-panel="updates">
       <h2>Update</h2>
       <div class="settings-grid align-start">
@@ -4241,7 +4496,7 @@ def index() -> Response:
         state = load_state()
         return Response(render_page(config, state), mimetype="text/html")
     except Exception as exc:
-        return Response(render_page({"store": {}, "products": []}, load_state(), str(exc)), mimetype="text/html", status=500)
+        return Response(render_page({"markets": [], "products": []}, load_state(), str(exc)), mimetype="text/html", status=500)
 
 
 @app.get("/settings")
@@ -4251,7 +4506,7 @@ def settings_page() -> Response:
         state = load_state()
         return Response(render_settings_page(config, state), mimetype="text/html")
     except Exception as exc:
-        return Response(render_settings_page({"store": {}, "products": [], "settings": {}}, load_state(), str(exc)), mimetype="text/html", status=500)
+        return Response(render_settings_page({"markets": [], "products": [], "settings": {}}, load_state(), str(exc)), mimetype="text/html", status=500)
 
 
 @app.post("/settings")
@@ -4328,6 +4583,109 @@ def test_mqtt() -> Response:
             save_state(state)
         set_notice(message)
     return redirect(url_for("settings_page", _anchor="mqtt"))
+
+
+@app.get("/backup/export")
+def export_backup() -> Response:
+    include_config = request.args.get("config") == "true"
+    include_state = request.args.get("state") == "true"
+    include_pdfs = request.args.get("pdfs") == "true"
+    if not (include_config or include_state or include_pdfs):
+        set_notice("Bitte mindestens einen Backup-Bereich auswählen.")
+        return redirect(url_for("settings_page", _anchor="backup"))
+    payload = create_backup_zip(include_config, include_state, include_pdfs)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    filename = f"preisermittlung_backup_{timestamp}.zip"
+    return Response(
+        payload,
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(payload)),
+        },
+    )
+
+
+@app.post("/backup/import/analyze")
+def analyze_backup_import() -> Response:
+    cleanup_old_backup_imports()
+    upload = request.files.get("backup_file")
+    if not upload or not getattr(upload, "filename", ""):
+        set_notice("Keine Backup-ZIP ausgewählt.")
+        return redirect(url_for("settings_page", _anchor="backup"))
+    if not str(upload.filename).lower().endswith(".zip"):
+        set_notice("Bitte eine ZIP-Datei auswählen.")
+        return redirect(url_for("settings_page", _anchor="backup"))
+    BACKUP_IMPORT_PATH.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    target = BACKUP_IMPORT_PATH / f"{token}.zip"
+    upload.save(target)
+    try:
+        info = analyze_backup_file(target)
+    except zipfile.BadZipFile:
+        target.unlink(missing_ok=True)
+        set_notice("Die Datei ist keine gültige ZIP-Datei.")
+        return redirect(url_for("settings_page", _anchor="backup"))
+    if not backup_has_components(info):
+        target.unlink(missing_ok=True)
+        set_notice("In dieser ZIP-Datei wurden keine bekannten Backup-Daten gefunden.")
+        return redirect(url_for("settings_page", _anchor="backup"))
+    with state_lock:
+        state = load_state()
+        remove_pending_backup_import(state)
+        state["backup_import"] = {
+            "token": token,
+            "filename": Path(str(upload.filename)).name,
+            "info": info,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        save_state(state)
+    set_notice("Backup geprüft. Bitte auswählen, was wiederhergestellt werden soll.")
+    return redirect(url_for("settings_page", _anchor="backup"))
+
+
+@app.get("/backup/import/cancel")
+def cancel_backup_import() -> Response:
+    with state_lock:
+        state = load_state()
+        remove_pending_backup_import(state)
+        save_state(state)
+    set_notice("Backup-Import abgebrochen.")
+    return redirect(url_for("settings_page", _anchor="backup"))
+
+
+@app.post("/backup/import/confirm")
+def confirm_backup_import() -> Response:
+    token = request.form.get("token", "").strip()
+    if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
+        set_notice("Backup-Import nicht gefunden.")
+        return redirect(url_for("settings_page", _anchor="backup"))
+    backup_path = BACKUP_IMPORT_PATH / f"{token}.zip"
+    if not backup_path.exists():
+        set_notice("Die hochgeladene Backup-Datei ist nicht mehr vorhanden.")
+        return redirect(url_for("settings_page", _anchor="backup"))
+    restore_config = request.form.get("restore_config") == "true"
+    restore_state = request.form.get("restore_state") == "true"
+    restore_pdfs = request.form.get("restore_pdfs") == "true"
+    if not (restore_config or restore_state or restore_pdfs):
+        set_notice("Bitte mindestens einen Bereich für die Wiederherstellung auswählen.")
+        return redirect(url_for("settings_page", _anchor="backup"))
+    try:
+        restored = restore_backup_file(backup_path, restore_config, restore_state, restore_pdfs)
+        if restore_pdfs:
+            refreshed = refresh_provider_products(load_config(), "manual_pdf")
+            if refreshed:
+                restored.append(f"{refreshed} PDF-Suchwörter neu geprüft")
+    except Exception as exc:
+        set_notice(f"Backup konnte nicht wiederhergestellt werden: {exc}")
+        return redirect(url_for("settings_page", _anchor="backup"))
+    backup_path.unlink(missing_ok=True)
+    with state_lock:
+        state = load_state()
+        state.pop("backup_import", None)
+        state["notice"] = "Backup wiederhergestellt: " + (", ".join(restored) if restored else "keine Daten geändert")
+        save_state(state)
+    return redirect(url_for("settings_page", _anchor="backup"))
 
 
 def product_by_id_with_state(config: Dict[str, Any], product_id: str) -> Optional[Dict[str, Any]]:
@@ -4450,7 +4808,6 @@ def api_prices() -> Response:
         return jsonify(
             {
                 "ok": True,
-                "store": config.get("store"),
                 "markets": markets_from_config(config),
                 "products": [{**{k: v for k, v in product.items() if k != "state"}, **product["state"]} for product in products],
                 "last_refresh_started_at": state.get("last_refresh_started_at"),
@@ -4527,8 +4884,6 @@ def add_market() -> Response:
             set_notice("Dieser Markt ist bereits gespeichert.")
             return redirect(url_for("index", markets_dialog=1))
         markets.append(market)
-        if not (config.get("store") or {}).get("market_id"):
-            config["store"] = dict(market)
         save_config(config)
     return redirect(url_for("index"))
 
@@ -4569,8 +4924,6 @@ def delete_market(market_id: str) -> Response:
         for market in config.get("markets", [])
         if not (market.get("market_id") == market_id and market_provider(market) == provider)
     ]
-    if (config.get("store") or {}).get("market_id") == market_id and market_provider(config.get("store") or {}) == provider:
-        config["store"].pop("market_id", None)
     save_config(config)
     return redirect(url_for("index"))
 

@@ -32,15 +32,17 @@ auf `127.0.0.1:5050`.
 cd /opt
 git clone https://github.com/Nisbo/preisermittlung.git
 cd preisermittlung
-sudo bash scripts/install_debian.sh
+./scripts/install_debian.sh
 ```
 
 Beim interaktiven Start schlägt der Installer Port `5151` vor. Du kannst ihn
 ändern, zum Beispiel auf `80`, wenn dort sicher kein anderer Dienst läuft.
+Der Installer muss als root laufen. Wenn du nicht per `su -` als root angemeldet
+bist, nutze `sudo ./scripts/install_debian.sh`.
 Ohne Interaktion kann der Port per Umgebungsvariable gesetzt werden:
 
 ```bash
-sudo PREISERMITTLUNG_PUBLIC_PORT=5151 bash scripts/install_debian.sh
+PREISERMITTLUNG_PUBLIC_PORT=5151 ./scripts/install_debian.sh
 ```
 
 Nach der Installation:
@@ -67,10 +69,9 @@ LAN-Betrieb rufst du die App über nginx auf, also standardmäßig über Port
 - startet Service und nginx neu
 
 nginx selbst wird als Debian-Paket installiert, falls es noch nicht vorhanden
-ist. Dieses Paket bringt den systemd-Service `nginx.service` mit. Der Installer
-legt also keinen eigenen nginx-Service an, sondern nur eine zusätzliche
-nginx-Site für Preisermittlung. Wenn nginx bereits installiert ist, wird die
-vorhandene Installation weiterverwendet.
+ist. Der Installer legt nur eine zusätzliche nginx-Site für Preisermittlung an.
+Wenn nginx bereits installiert ist, wird die vorhandene Installation
+weiterverwendet.
 
 ## Lokale Daten
 
@@ -87,18 +88,59 @@ Diese Dateien und Ordner sind lokale Runtime-Daten und gehören nicht ins Git-Re
 
 Updates dürfen diese Dateien nicht überschreiben.
 
+## Aufbau der `config.yaml`
+
+Die Konfiguration ist absichtlich so aufgebaut, dass sie auch manuell
+bearbeitet werden kann:
+
+- `settings`: globale Einstellungen der App
+- `markets`: gespeicherte Märkte, zum Beispiel REWE-Filialen
+- `categories`: Kategorien für Artikel
+- `products`: überwachte Artikel, Prospekt-Suchwörter oder Webseitenpreise
+
+Einen separaten `store`- oder Default-Markt gibt es im aktuellen Format nicht
+mehr. Wenn ein Artikel einen Markt braucht, steht direkt am Artikel der
+`provider` und die passende `market_id`. Dadurch ist eindeutig, welcher Artikel
+zu welchem Markt gehört.
+
+Alte Configs mit `store:` werden beim Lesen noch automatisch verstanden und beim
+nächsten Speichern in die `markets`/`products`-Struktur übernommen.
+
 ## Update per Git
 
 Wenn die App per Git installiert wurde:
 
 ```bash
 cd /opt/preisermittlung
-sudo bash scripts/update.sh
+./scripts/update.sh
 ```
 
 Das Script führt `git pull --ff-only` aus, aktualisiert die Python-Abhängigkeiten
 und startet den systemd-Service neu. Lokale Runtime-Daten werden nicht gelöscht
 oder überschrieben.
+Auch das Update-Script muss als root laufen. Falls du nicht bereits root bist,
+nutze `sudo ./scripts/update.sh`.
+
+## Deinstallation
+
+Das Deinstallationsscript stoppt den Dienst, entfernt die systemd-Datei und die
+nginx-Site dieser App. Danach fragt es, ob das komplette App-Verzeichnis
+gelöscht werden soll.
+
+```bash
+cd /opt/preisermittlung
+./scripts/uninstall_debian.sh
+```
+
+Wenn das App-Verzeichnis gelöscht wird, werden auch Konfiguration, Status,
+hochgeladene PDFs, generierte Bilder, `.venv`, `.playwright-browsers` und
+Cache-Dateien entfernt. Systempakete wie nginx, Python, poppler-utils oder
+Playwright-Bibliotheken werden nicht automatisch deinstalliert, weil sie schon
+vorher installiert gewesen sein oder von anderen Anwendungen gebraucht werden
+können. Nicht mehr benötigte apt-Pakete kann man danach bei Bedarf manuell mit
+`sudo apt autoremove` prüfen.
+Auch das Deinstallationsscript muss als root laufen. Falls du nicht bereits root
+bist, nutze `sudo ./scripts/uninstall_debian.sh`.
 
 ## Lokales Entwickeln
 
@@ -161,6 +203,8 @@ Lokale Probe-Scripts und Entwicklungstools gehören nicht hinein.
 - `requirements.txt`: Python-Laufzeitabhängigkeiten für die Installation.
 - `scripts/install_debian.sh`: Installer für Debian/Proxmox/LXC.
 - `scripts/update.sh`: Update-Script für Git-basierte Installationen.
+- `scripts/uninstall_debian.sh`: Deinstallationsscript für die App-Konfiguration
+  und optional das App-Verzeichnis.
 - `deploy/preisermittlung.service`: Vorlage für den systemd-Service.
 - `deploy/nginx-preisermittlung.conf`: Vorlage für die nginx-Site.
 - `deploy/home-assistant/preisermittlung-card.js`: Home-Assistant-Custom-Card.

@@ -96,25 +96,45 @@ def parse_simple_yaml(path: Path) -> Dict[str, Any]:
     return config
 
 
+def migrate_legacy_store(config: Dict[str, Any]) -> None:
+    store = config.get("store") if isinstance(config.get("store"), dict) else {}
+    if not store:
+        return
+
+    store_provider = store.get("provider") or "rewe"
+    store_market_id = store.get("market_id") or ""
+    markets = config.setdefault("markets", [])
+    if store_market_id and not any(
+        market.get("market_id") == store_market_id and (market.get("provider") or "rewe") == store_provider
+        for market in markets
+    ):
+        migrated_market = dict(store)
+        migrated_market["provider"] = store_provider
+        markets.insert(0, migrated_market)
+
+    if store_market_id:
+        for product in config.get("products") or []:
+            product.setdefault("provider", store_provider)
+            product.setdefault("market_id", store_market_id)
+
+
 def validate_config(config: Dict[str, Any]) -> None:
-    store = config.get("store")
+    migrate_legacy_store(config)
     products = config.get("products")
-    if not isinstance(store, dict):
-        raise ConfigError("Config braucht einen store-Bereich.")
+    markets = config.get("markets")
+    if markets is None:
+        config["markets"] = []
+    elif not isinstance(markets, list):
+        raise ConfigError("Config-Bereich markets muss eine Liste sein.")
     if not isinstance(products, list):
         raise ConfigError("Config braucht einen products-Bereich.")
     config.setdefault("categories", [{"id": "allgemein", "name": "Allgemein"}])
-    if products:
-        for key in ("postal_code", "service"):
-            if not store.get(key):
-                raise ConfigError(f"store.{key} fehlt.")
-        if not store.get("market_id") and not store.get("market_match"):
-            raise ConfigError("store.market_id oder store.market_match fehlt.")
-        if store["service"].lower() != "pickup":
-            raise ConfigError("Aktuell wird nur store.service: pickup unterstuetzt.")
     for product in products:
         if not product.get("id") or not product.get("article_number"):
             raise ConfigError("Jedes Produkt braucht id und article_number.")
+        provider = product.get("provider") or ""
+        if provider == "rewe" and not product.get("market_id"):
+            raise ConfigError(f"REWE-Produkt {product.get('id')} braucht market_id.")
     for market in config.get("markets") or []:
         if not market.get("market_id") or not market.get("postal_code"):
             raise ConfigError("Jeder Markt braucht market_id und postal_code.")
@@ -134,13 +154,8 @@ def write_simple_yaml(config: Dict[str, Any], path: Path = CONFIG_PATH) -> None:
             lines.append(f"  {key}: {quote_yaml(value)}")
         lines.append("")
 
-    lines.append("store:")
-    for key, value in (config.get("store") or {}).items():
-        lines.append(f"  {key}: {quote_yaml(value)}")
-
     markets = config.get("markets") or []
     if markets:
-        lines.append("")
         lines.append("markets:")
         for market in markets:
             lines.append(f"  - provider: {quote_yaml(market.get('provider') or 'rewe')}")

@@ -149,16 +149,14 @@ def markets_from_config(config: Dict[str, Any]) -> List[Dict[str, str]]:
 
 def market_for_product(config: Dict[str, Any], product: Dict[str, str]) -> Dict[str, str]:
     markets = markets_from_config(config)
-    market_id = product.get("market_id") or (config.get("store") or {}).get("market_id")
-    provider = product.get("provider")
+    market_id = product.get("market_id")
+    provider = product.get("provider") or "rewe"
     if market_id:
         for market in markets:
             market_provider = market.get("provider") or "rewe"
             if str(market.get("market_id")) == str(market_id) and (not provider or provider == market_provider):
                 return market
-    if markets:
-        return markets[0]
-    return config["store"]
+    raise RuntimeError(f"Kein REWE-Markt fuer Artikel {product.get('id') or product.get('article_number')} konfiguriert.")
 
 
 def format_euro(cents: int) -> str:
@@ -231,6 +229,6 @@ def read_prices(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "ok": True,
-        "store": store_from_market(first_market or find_pickup_market(config["store"])),
+        "store": store_from_market(first_market) if first_market else None,
         "products": products,
     }

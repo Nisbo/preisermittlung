@@ -88,8 +88,6 @@ settings:
   theme: "light"
   api_enabled: "true"
 
-store:
-
 markets:
 
 categories:
