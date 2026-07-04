@@ -1187,10 +1187,16 @@ document.querySelectorAll('form').forEach((form) => {
       if (!form.dataset.noScroll) window.scrollTo({top: 0, behavior: 'smooth'});
     }
     if (form.dataset.backupUploadForm !== undefined) {
+      const message = 'Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...';
       form.querySelectorAll('[data-backup-status]').forEach((status) => {
         status.hidden = false;
-        status.textContent = 'Backup wird hochgeladen und geprüft...';
+        status.textContent = message;
       });
+      document.querySelectorAll('[data-upload-status-global]').forEach((status) => {
+        status.hidden = false;
+        status.textContent = message;
+      });
+      window.scrollTo({top: 0, behavior: 'smooth'});
     }
     const submitter = event.submitter || document.activeElement;
     if (submitter && submitter.name && !form.querySelector(`input[type="hidden"][data-submit-proxy="${submitter.name}"]`)) {
@@ -4299,7 +4305,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
               <label>Backup-ZIP</label>
               <input type="file" name="backup_file" accept="application/zip,.zip" required>
             </div>
-            <div class="notice" data-backup-status hidden style="margin-top: 10px">Backup wird hochgeladen und geprüft...</div>
+            <div class="notice" data-backup-status hidden style="margin-top: 10px">Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...</div>
             <div class="actions settings-actions">
               <button type="submit">{icon('upload')} Backup prüfen</button>
             </div>
@@ -4608,23 +4614,29 @@ def export_backup() -> Response:
 
 @app.post("/backup/import/analyze")
 def analyze_backup_import() -> Response:
-    cleanup_old_backup_imports()
-    upload = request.files.get("backup_file")
-    if not upload or not getattr(upload, "filename", ""):
-        set_notice("Keine Backup-ZIP ausgewählt.")
-        return redirect(url_for("settings_page", _anchor="backup"))
-    if not str(upload.filename).lower().endswith(".zip"):
-        set_notice("Bitte eine ZIP-Datei auswählen.")
-        return redirect(url_for("settings_page", _anchor="backup"))
-    BACKUP_IMPORT_PATH.mkdir(parents=True, exist_ok=True)
-    token = uuid.uuid4().hex
-    target = BACKUP_IMPORT_PATH / f"{token}.zip"
-    upload.save(target)
     try:
+        cleanup_old_backup_imports()
+        upload = request.files.get("backup_file")
+        if not upload or not getattr(upload, "filename", ""):
+            set_notice("Keine Backup-ZIP ausgewählt.")
+            return redirect(url_for("settings_page", _anchor="backup"))
+        if not str(upload.filename).lower().endswith(".zip"):
+            set_notice("Bitte eine ZIP-Datei auswählen.")
+            return redirect(url_for("settings_page", _anchor="backup"))
+        BACKUP_IMPORT_PATH.mkdir(parents=True, exist_ok=True)
+        token = uuid.uuid4().hex
+        target = BACKUP_IMPORT_PATH / f"{token}.zip"
+        upload.save(target)
         info = analyze_backup_file(target)
     except zipfile.BadZipFile:
         target.unlink(missing_ok=True)
         set_notice("Die Datei ist keine gültige ZIP-Datei.")
+        return redirect(url_for("settings_page", _anchor="backup"))
+    except Exception as exc:
+        app.logger.exception("Backup import analysis failed")
+        if "target" in locals():
+            target.unlink(missing_ok=True)
+        set_notice(f"Backup konnte nicht geprüft werden: {exc}")
         return redirect(url_for("settings_page", _anchor="backup"))
     if not backup_has_components(info):
         target.unlink(missing_ok=True)
