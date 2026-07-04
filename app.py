@@ -40,7 +40,7 @@ from providers import (
     browser_cache_infos,
     clear_browser_cache,
 )
-from readers import generic_reader, manual_pdf_reader
+from readers import aez_pdf_reader, generic_reader, manual_pdf_reader
 from readers.rewe_reader import markets_from_config
 
 
@@ -48,7 +48,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.5-dev"
+APP_VERSION = "0.1.6-dev"
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
@@ -947,6 +947,18 @@ body[data-theme="dark"] .visual-price-map {
   margin: 0;
   flex: 0 0 auto;
 }
+.provider-choice-group {
+  padding: 6px 0;
+}
+.provider-choice-group + .provider-choice-group {
+  border-top: 1px solid var(--line);
+}
+.provider-choice-head {
+  font-weight: 650;
+}
+.provider-choice-indent {
+  margin-left: 24px;
+}
 .settings-actions { margin-top: 14px; }
 .settings-tabs {
   display: flex;
@@ -1808,12 +1820,13 @@ def restore_backup_file(path: Path, restore_config: bool, restore_state: bool, r
                 manual_pdf_reader.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
                 for existing_pdf in manual_pdf_reader.UPLOAD_DIR.glob("*.pdf"):
                     existing_pdf.unlink()
-                manual_pdf_reader.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-                for existing_image in manual_pdf_reader.GENERATED_DIR.glob("*.png"):
-                    try:
-                        existing_image.unlink()
-                    except OSError:
-                        pass
+                for generated_dir in [manual_pdf_reader.GENERATED_DIR, aez_pdf_reader.GENERATED_DIR]:
+                    generated_dir.mkdir(parents=True, exist_ok=True)
+                    for existing_image in generated_dir.glob("*.png"):
+                        try:
+                            existing_image.unlink()
+                        except OSError:
+                            pass
                 for name in sorted(pdf_names):
                     atomic_write_bytes(manual_pdf_reader.UPLOAD_DIR / Path(name).name, archive.read(name))
                 restored.append(f"{len(pdf_names)} PDF-Datei(en)")
@@ -1832,6 +1845,18 @@ def pop_notice(state: Dict[str, Any]) -> Optional[str]:
     if notice is not None:
         save_state(state)
     return notice
+
+
+def render_notice_html(message: Optional[str]) -> str:
+    if not message:
+        return ""
+    content = escape(str(message))
+    content = content.replace(
+        "Nutze Settings &gt; Abfragen",
+        '<a href="/settings#queries">Nutze Settings &gt; Abfragen</a>',
+    )
+    content = content.replace("\n", "<br>")
+    return f'<div class="notice" data-flash-notice>{content}</div>'
 
 
 def set_product_mqtt_notice(product_id: str, message: str) -> None:
@@ -3595,7 +3620,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         )
 
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
-    notice_html = f'<div class="notice" data-flash-notice>{escape(notice)}</div>' if notice else ""
+    notice_html = render_notice_html(notice)
     active_products = [product for product in products if product_enabled(product)]
     progress_hidden = "" if progress.get("running") else " hidden"
     return f"""<!doctype html>
@@ -3935,7 +3960,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     home_view = default_home_view(config)
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
     notice = pop_notice(state)
-    notice_html = f'<div class="notice">{escape(notice)}</div>' if notice else ""
+    notice_html = render_notice_html(notice)
     mqtt_test_notice = state.pop("mqtt_test_notice", None) or {}
     if mqtt_test_notice:
         save_state(state)
@@ -3981,18 +4006,41 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         for info in manual_pdf_reader.pdf_infos()
     ) or '<div class="small">Noch keine manuellen PDFs hochgeladen.</div>'
     all_provider_choices = provider_choices()
-    refresh_provider_rows = [
-        '<label class="toggle-line"><input type="checkbox" name="provider_ids" value="__shops__"> Alle Shops</label>'
-    ]
-    for choice in sorted(all_provider_choices, key=lambda item: (str(item.get("kind") or ""), str(item["label"]).casefold())):
-        kind_text = "Prospekt" if choice.get("kind") == "prospect" else "Shop"
-        refresh_provider_rows.append(
-            '<label class="toggle-line">'
-            f'<input type="checkbox" name="provider_ids" value="{escape(choice["id"])}"> '
-            f'{escape(choice["label"])} <span class="small">({escape(kind_text)})</span>'
-            '</label>'
-        )
-    refresh_provider_options = "".join(refresh_provider_rows)
+    shop_refresh_choices = sorted(
+        [choice for choice in all_provider_choices if choice.get("kind") == "shop"],
+        key=lambda item: str(item["label"]).casefold(),
+    )
+    prospect_refresh_choices = sorted(
+        [choice for choice in all_provider_choices if choice.get("kind") == "prospect"],
+        key=lambda item: str(item["label"]).casefold(),
+    )
+    shop_refresh_options = "".join(
+        '<label class="toggle-line provider-choice-indent">'
+        f'<input type="checkbox" name="provider_ids" value="{escape(choice["id"])}" data-provider-refresh-check data-provider-kind="shop"> '
+        f'{escape(choice["label"])} <span class="small">(Shop)</span>'
+        '</label>'
+        for choice in shop_refresh_choices
+    )
+    prospect_refresh_options = "".join(
+        '<label class="toggle-line provider-choice-indent">'
+        f'<input type="checkbox" name="provider_ids" value="{escape(choice["id"])}" data-provider-refresh-check data-provider-kind="prospect"> '
+        f'{escape(choice["label"])} <span class="small">(Prospekt)</span>'
+        '</label>'
+        for choice in prospect_refresh_choices
+    )
+    refresh_provider_options = (
+        '<div class="provider-choice-group">'
+        '<label class="toggle-line provider-choice-head"><input type="checkbox" name="provider_ids" value="__all__" data-provider-refresh-all> Alles</label>'
+        '</div>'
+        '<div class="provider-choice-group">'
+        '<label class="toggle-line provider-choice-head"><input type="checkbox" name="provider_ids" value="__shops__" data-provider-refresh-group="shop"> Alle Shops</label>'
+        f'{shop_refresh_options}'
+        '</div>'
+        '<div class="provider-choice-group">'
+        '<label class="toggle-line provider-choice-head"><input type="checkbox" name="provider_ids" value="__prospects__" data-provider-refresh-group="prospect"> Alle PDF</label>'
+        f'{prospect_refresh_options}'
+        '</div>'
+    )
     settings_progress_hidden = "" if progress.get("running") else " hidden"
     settings_progress_pct = 0
     if progress.get("total"):
@@ -4521,6 +4569,43 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     }}
     pollSettingsProgress();
 
+    function updateProviderRefreshParents() {{
+      const checks = [...document.querySelectorAll('[data-provider-refresh-check]')];
+      const allBox = document.querySelector('[data-provider-refresh-all]');
+      const groups = [...document.querySelectorAll('[data-provider-refresh-group]')];
+      groups.forEach((groupBox) => {{
+        const kind = groupBox.dataset.providerRefreshGroup;
+        const groupChecks = checks.filter((check) => check.dataset.providerKind === kind);
+        const checkedCount = groupChecks.filter((check) => check.checked).length;
+        groupBox.checked = groupChecks.length > 0 && checkedCount === groupChecks.length;
+        groupBox.indeterminate = checkedCount > 0 && checkedCount < groupChecks.length;
+      }});
+      if (allBox) {{
+        const checkedCount = checks.filter((check) => check.checked).length;
+        allBox.checked = checks.length > 0 && checkedCount === checks.length;
+        allBox.indeterminate = checkedCount > 0 && checkedCount < checks.length;
+      }}
+    }}
+    document.querySelector('[data-provider-refresh-all]')?.addEventListener('change', (event) => {{
+      document.querySelectorAll('[data-provider-refresh-check], [data-provider-refresh-group]').forEach((check) => {{
+        check.checked = event.currentTarget.checked;
+        check.indeterminate = false;
+      }});
+      updateProviderRefreshParents();
+    }});
+    document.querySelectorAll('[data-provider-refresh-group]').forEach((groupBox) => {{
+      groupBox.addEventListener('change', () => {{
+        document.querySelectorAll(`[data-provider-refresh-check][data-provider-kind="${{groupBox.dataset.providerRefreshGroup}}"]`).forEach((check) => {{
+          check.checked = groupBox.checked;
+        }});
+        updateProviderRefreshParents();
+      }});
+    }});
+    document.querySelectorAll('[data-provider-refresh-check]').forEach((check) => {{
+      check.addEventListener('change', updateProviderRefreshParents);
+    }});
+    updateProviderRefreshParents();
+
     document.querySelectorAll('[data-provider-refresh-form]').forEach((form) => {{
       form.addEventListener('submit', () => {{
         document.querySelectorAll('[data-provider-refresh-status]').forEach((status) => {{
@@ -4745,8 +4830,12 @@ def refresh_selected_providers() -> Response:
     choices = provider_choices()
     valid_ids = {choice["id"] for choice in choices}
     provider_ids: List[str] = []
+    if "__all__" in selected:
+        provider_ids.extend(choice["id"] for choice in choices)
     if "__shops__" in selected:
         provider_ids.extend(choice["id"] for choice in choices if choice.get("kind") == "shop")
+    if "__prospects__" in selected:
+        provider_ids.extend(choice["id"] for choice in choices if choice.get("kind") == "prospect")
     provider_ids.extend(provider_id for provider_id in selected if provider_id in valid_ids)
     provider_ids = sorted(set(provider_ids), key=lambda provider_id: provider_label(provider_id).casefold())
     if not provider_ids:
@@ -4913,10 +5002,12 @@ def confirm_backup_import() -> Response:
     with state_lock:
         state = load_state()
         state.pop("backup_import", None)
+        restored_lines = "\n".join(f"- {item}" for item in restored) if restored else "- keine Daten geändert"
         state["notice"] = (
-            "Backup wiederhergestellt: "
-            + (", ".join(restored) if restored else "keine Daten geändert")
-            + ". Artikel wurden nicht automatisch aktualisiert. Nutze Settings > Abfragen, um Anbieter gezielt neu zu prüfen."
+            "Backup wiederhergestellt:\n"
+            + restored_lines
+            + "\nArtikel wurden nicht automatisch aktualisiert.\n"
+            + "Nutze Settings > Abfragen, um Anbieter gezielt neu zu prüfen."
         )
         save_state(state)
     return redirect(url_for("settings_page", _anchor="backup"))
