@@ -48,7 +48,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.0-dev"
+APP_VERSION = "0.1.1-dev"
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
@@ -758,6 +758,32 @@ body[data-theme="dark"] .visual-price-map {
   padding: 12px;
   margin-bottom: 12px;
 }
+.busy-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(12, 16, 12, .48);
+}
+.busy-overlay[hidden] {
+  display: none;
+}
+.busy-box {
+  width: min(520px, 92vw);
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: 0 20px 80px rgba(0, 0, 0, .28);
+  padding: 18px;
+}
+.busy-box strong {
+  display: block;
+  font-size: 18px;
+  margin-bottom: 6px;
+}
 .status-dot {
   display: inline-block;
   width: 9px;
@@ -1188,6 +1214,12 @@ document.querySelectorAll('form').forEach((form) => {
     }
     if (form.dataset.backupUploadForm !== undefined) {
       const message = 'Backup wird hochgeladen und geprüft. Bei großen ZIP-Dateien kann das einen Moment dauern...';
+      const overlay = document.querySelector('[data-busy-overlay]');
+      if (overlay) {
+        overlay.hidden = false;
+        const text = overlay.querySelector('[data-busy-overlay-text]');
+        if (text) text.textContent = message;
+      }
       form.querySelectorAll('[data-backup-status]').forEach((status) => {
         status.hidden = false;
         status.textContent = message;
@@ -1636,17 +1668,20 @@ def load_state() -> Dict[str, Any]:
 def save_state(state: Dict[str, Any]) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=STATE_PATH.parent,
-        prefix=".state.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        handle.write(payload)
-        temp_path = Path(handle.name)
-    temp_path.replace(STATE_PATH)
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=STATE_PATH.parent,
+            prefix=".state.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(payload)
+            temp_path = Path(handle.name)
+        temp_path.replace(STATE_PATH)
+    except PermissionError:
+        STATE_PATH.write_text(payload, encoding="utf-8")
 
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
@@ -3999,6 +4034,12 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     {error_html}
     {notice_html}
     <div class="notice" data-upload-status-global hidden>PDF wird hochgeladen und vorhandene Suchwörter werden geprüft...</div>
+    <div class="busy-overlay" data-busy-overlay hidden>
+      <div class="busy-box">
+        <strong>Bitte warten</strong>
+        <div class="small" data-busy-overlay-text>Vorgang läuft...</div>
+      </div>
+    </div>
     <nav class="settings-tabs" aria-label="Settings Bereiche">
       <button class="settings-tab" type="button" data-settings-tab="info">Info</button>
       <button class="settings-tab" type="button" data-settings-tab="home">Startseite</button>
