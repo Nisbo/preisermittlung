@@ -48,7 +48,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.1-dev"
+APP_VERSION = "0.1.2-dev"
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
@@ -1229,6 +1229,19 @@ document.querySelectorAll('form').forEach((form) => {
         status.textContent = message;
       });
       window.scrollTo({top: 0, behavior: 'smooth'});
+      if (form.dataset.backupSubmitting !== 'true') {
+        event.preventDefault();
+        form.dataset.backupSubmitting = 'true';
+        const button = event.submitter || form.querySelector('button[type="submit"], button:not([type])');
+        if (button) {
+          button.disabled = true;
+          button.textContent = 'Bitte warten...';
+        }
+        requestAnimationFrame(() => {
+          window.setTimeout(() => HTMLFormElement.prototype.submit.call(form), 120);
+        });
+        return;
+      }
     }
     const submitter = event.submitter || document.activeElement;
     if (submitter && submitter.name && !form.querySelector(`input[type="hidden"][data-submit-proxy="${submitter.name}"]`)) {
@@ -1686,16 +1699,19 @@ def save_state(state: Dict[str, Any]) -> None:
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "wb",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        handle.write(payload)
-        temp_path = Path(handle.name)
-    temp_path.replace(path)
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(payload)
+            temp_path = Path(handle.name)
+        temp_path.replace(path)
+    except PermissionError:
+        path.write_bytes(payload)
 
 
 def backup_manifest() -> Dict[str, Any]:
