@@ -51,7 +51,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.11-dev"
+APP_VERSION = "0.1.12-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -1513,6 +1513,12 @@ def local_url_with_query(value: str, key: str, query_value: str) -> str:
     query = [(item_key, item_value) for item_key, item_value in query if item_key != key]
     query.append((key, query_value))
     return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
+def local_url_with_fragment(value: str, fragment: str) -> str:
+    parsed = urllib.parse.urlparse(value)
+    clean_fragment = fragment.lstrip("#")
+    return urllib.parse.urlunparse(parsed._replace(fragment=clean_fragment))
 
 
 def add_seconds_iso(value: Optional[str], seconds: float) -> Optional[str]:
@@ -4153,9 +4159,8 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             '</div>'
         )
     update_log_html = (
-        f'<textarea class="code-preview update-log-output" readonly>{escape(update_status["log"])}</textarea>'
-        if update_status.get("log")
-        else '<div class="small">Noch kein Update-Log vorhanden.</div>'
+        f'<textarea class="code-preview update-log-output" data-update-log readonly '
+        f'placeholder="Noch kein Update-Log vorhanden.">{escape(update_status.get("log") or "")}</textarea>'
     )
     update_button_disabled = " disabled" if update_status.get("active") else ""
     manual_pdf_rows = "".join(
@@ -4652,7 +4657,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           <h3>Serverupdate</h3>
           <div class="small">Startet den systemd-Job <code>{escape(update_service_unit())}</code>. Der Job läuft als root, führt <code>scripts/update.sh</code> aus, aktualisiert Git, Python-Abhängigkeiten und Playwright und startet die App neu.</div>
           <div class="small">Vor einem Update ist ein Backup empfehlenswert. Während des Neustarts kann die Weboberfläche kurz nicht erreichbar sein.</div>
-          <div class="metric" style="margin-top: 12px"><span>Status</span><strong>{escape(str(update_status.get("state") or "-"))}</strong></div>
+          <div class="metric" style="margin-top: 12px"><span>Status</span><strong data-update-state>{escape(str(update_status.get("state") or "-"))}</strong></div>
           <form method="post" action="/settings/update/start" style="margin-top: 12px" data-system-update-form>
             <div class="notice" data-system-update-status hidden>Serverupdate wird gestartet...</div>
             <div class="actions settings-actions">
@@ -4820,6 +4825,40 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         }}
       }});
     }});
+
+    let updatePollAttempts = 0;
+    async function pollUpdateStatus() {{
+      const logArea = document.querySelector('[data-update-log]');
+      const stateNode = document.querySelector('[data-update-state]');
+      if (!logArea && !stateNode) return;
+      try {{
+        const response = await fetch('/api/update-status', {{cache: 'no-store'}});
+        const status = await response.json();
+        updatePollAttempts = 0;
+        if (stateNode) stateNode.textContent = status.state || '-';
+        if (logArea && typeof status.log === 'string') {{
+          const shouldStickToBottom = logArea.scrollTop + logArea.clientHeight >= logArea.scrollHeight - 12;
+          logArea.value = status.log;
+          if (shouldStickToBottom) logArea.scrollTop = logArea.scrollHeight;
+        }}
+        const active = !!status.active;
+        document.querySelectorAll('[data-system-update-form] button[type="submit"]').forEach((button) => {{
+          button.disabled = active;
+          if (!active && button.textContent.trim() === 'Bitte warten...') {{
+            button.textContent = 'Serverupdate starten';
+          }}
+        }});
+        if (active || new URLSearchParams(window.location.search).get('tab') === 'updates') {{
+          window.setTimeout(pollUpdateStatus, active ? 1200 : 5000);
+        }}
+      }} catch (error) {{
+        updatePollAttempts += 1;
+        if (updatePollAttempts < 60) window.setTimeout(pollUpdateStatus, 1500);
+      }}
+    }}
+    if (new URLSearchParams(window.location.search).get('tab') === 'updates') {{
+      pollUpdateStatus();
+    }}
 
     const userAgentInput = document.getElementById('user-agent-input');
     document.getElementById('use-current-user-agent')?.addEventListener('click', () => {{
@@ -5361,6 +5400,11 @@ def api_progress() -> Response:
         return jsonify(dict(progress))
 
 
+@app.get("/api/update-status")
+def api_update_status() -> Response:
+    return jsonify(update_service_status())
+
+
 @app.get("/generated/<path:filename>")
 def generated_file(filename: str) -> Response:
     return send_from_directory(GENERATED_PATH, filename)
@@ -5376,7 +5420,9 @@ def refresh_all() -> Response:
 def refresh_product(product_id: str) -> Response:
     start_refresh(product_id)
     target = safe_local_redirect_target(request.form.get("return_to", ""), url_for("index"))
-    return redirect(local_url_with_query(target, "refresh_started", "1"))
+    target = local_url_with_query(target, "refresh_started", "1")
+    target = local_url_with_fragment(target, f"product-{product_id}")
+    return redirect(target)
 
 
 @app.post("/markets/search")
