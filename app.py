@@ -52,7 +52,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.17-dev"
+APP_VERSION = "0.1.18-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -579,7 +579,7 @@ tr.is-target-price > td:first-child {
 }
 .grid.market-grid { grid-template-columns: .7fr .7fr 1fr auto; }
 .grid.product-grid { grid-template-columns: 1fr 1.5fr .9fr 1fr auto; }
-.grid.filter-grid { grid-template-columns: 1fr .8fr 1.4fr auto auto; }
+.grid.filter-grid { grid-template-columns: 1fr .8fr 1.4fr auto auto auto; }
 .category-filter-control {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1351,7 +1351,7 @@ function renderHistoryTable(container, data) {
 }
 async function loadHistoryDialog(dialog, page = 1) {
   const productId = dialog.dataset.productId || '';
-  const range = dialog.querySelector('[data-history-range]')?.value || '1m';
+  const range = dialog.querySelector('[data-history-range]')?.value || '7d';
   const offset = Number(dialog.dataset.historyOffset || '0');
   const chart = dialog.querySelector('[data-history-chart]');
   const table = dialog.querySelector('[data-history-table]');
@@ -1683,6 +1683,21 @@ def target_price_missed_display_mode(config: Dict[str, Any]) -> str:
     return value if value in {"hide", "normal", "muted"} else "normal"
 
 
+def target_price_filter_enabled(config: Dict[str, Any]) -> bool:
+    raw = settings_value(config, "target_price_filter_enabled", "false").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def allow_iframe_embedding(config: Dict[str, Any]) -> bool:
+    raw = settings_value(config, "allow_iframe_embedding", "false").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def history_default_range(config: Dict[str, Any]) -> str:
+    value = settings_value(config, "history_default_range", "7d").strip().lower()
+    return value if value in {"24h", "7d", "14d", "1m", "6m", "12m"} else "7d"
+
+
 def product_below_target_price(product: Dict[str, Any]) -> bool:
     target_cents = product_target_price_cents(product)
     if target_cents is None:
@@ -1807,6 +1822,7 @@ def icon(name: str) -> str:
         "search": '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
         "home": '<path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>',
         "list": '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+        "target": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/>',
         "chart": '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/><circle cx="7" cy="15" r="1"/><circle cx="11" cy="11" r="1"/><circle cx="14" cy="14" r="1"/><circle cx="19" cy="7" r="1"/>',
         "image": '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
         "pdf": '<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/><path d="M8 13h1.5a1.5 1.5 0 0 0 0-3H8v7"/><path d="M13 10v7h1.5a2.5 2.5 0 0 0 0-5H13"/><path d="M18 10h3"/><path d="M18 13h2"/>',
@@ -2393,6 +2409,9 @@ def save_settings_from_form(config: Dict[str, Any]) -> Dict[str, Any]:
         settings["auto_refresh_manual_pdfs"] = "true" if request.form.get("auto_refresh_manual_pdfs") == "true" else "false"
     if "api_settings_present" in request.form:
         settings["api_enabled"] = "true" if request.form.get("api_enabled") == "true" else "false"
+        settings["allow_iframe_embedding"] = (
+            "true" if request.form.get("allow_iframe_embedding") == "true" else "false"
+        )
     if "product_id_display" in request.form:
         mode = request.form.get("product_id_display", "show").strip().lower()
         settings["product_id_display"] = mode if mode in {"show", "hide", "interactive"} else "show"
@@ -2403,6 +2422,9 @@ def save_settings_from_form(config: Dict[str, Any]) -> Dict[str, Any]:
         settings["multi_category_filter_enabled"] = (
             "true" if request.form.get("multi_category_filter_enabled") == "true" else "false"
         )
+        settings["target_price_filter_enabled"] = (
+            "true" if request.form.get("target_price_filter_enabled") == "true" else "false"
+        )
         settings["target_price_highlight_enabled"] = (
             "true" if request.form.get("target_price_highlight_enabled") == "true" else "false"
         )
@@ -2411,6 +2433,8 @@ def save_settings_from_form(config: Dict[str, Any]) -> Dict[str, Any]:
         )
         missed_mode = request.form.get("target_price_missed_display", "normal").strip().lower()
         settings["target_price_missed_display"] = missed_mode if missed_mode in {"hide", "normal", "muted"} else "normal"
+        history_range = request.form.get("history_default_range", "7d").strip().lower()
+        settings["history_default_range"] = history_range if history_range in {"24h", "7d", "14d", "1m", "6m", "12m"} else "7d"
     if "pdf_extra_matches_display" in request.form:
         mode = request.form.get("pdf_extra_matches_display", "wrap").strip().lower()
         settings["pdf_extra_matches_display"] = mode if mode in {"wrap", "slider", "off"} else "wrap"
@@ -2932,7 +2956,7 @@ def history_window(range_key: str, offset: int = 0) -> Dict[str, Any]:
     }
 
 
-def read_price_history(product_id: str, range_key: str = "1m", page: int = 1, per_page: int = 25, offset: int = 0) -> Dict[str, Any]:
+def read_price_history(product_id: str, range_key: str = "7d", page: int = 1, per_page: int = 25, offset: int = 0) -> Dict[str, Any]:
     window = history_window(range_key, offset)
     records: List[Dict[str, Any]] = []
     if PRICE_HISTORY_PATH.exists():
@@ -3289,6 +3313,19 @@ def before_request() -> None:
     ensure_mqtt_started()
 
 
+@app.after_request
+def apply_security_headers(response: Response) -> Response:
+    try:
+        config = load_config()
+        if allow_iframe_embedding(config):
+            response.headers.pop("X-Frame-Options", None)
+        else:
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    except Exception:
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return response
+
+
 def render_delete_market_dialog(
     market: Optional[Dict[str, Any]],
     products: List[Dict[str, Any]],
@@ -3365,6 +3402,9 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         selected_category = "all"
     category_filter_ids = selected_multi_categories or ([] if selected_category == "all" else [selected_category])
     selected_shop = request.args.get("shop") or "all"
+    target_filter = request.args.get("target") or "all"
+    if target_filter not in {"all", "hit"}:
+        target_filter = "all"
     search_text = request.args.get("q", "").strip()
     grouped_view = request.args.get("view") == "grouped" or (not request.args and default_home_view(config) == "grouped")
     products = [
@@ -3390,6 +3430,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
                 ]
             ).lower()
         )
+        and (target_filter != "hit" or product_below_target_price(product))
     ]
     total = sum(int(product["state"].get("price_cents") or 0) for product in products)
     changed_at = latest_change_at(products)
@@ -3525,6 +3566,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         multi_filter_link_params["categories"] = [selected_category]
     if selected_shop != "all":
         multi_filter_link_params["shop"] = selected_shop
+    if target_filter != "all":
+        multi_filter_link_params["target"] = target_filter
     if search_text:
         multi_filter_link_params["q"] = search_text
     if grouped_view:
@@ -3576,11 +3619,27 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         base_filter_params["category"] = selected_category
     if selected_shop != "all":
         base_filter_params["shop"] = selected_shop
+    if target_filter != "all":
+        base_filter_params["target"] = target_filter
     if search_text:
         base_filter_params["q"] = search_text
     group_active_class = " is-active" if grouped_view else ""
-    all_active_class = " is-active" if not grouped_view and not selected_multi_categories and selected_category == "all" and selected_shop == "all" and not search_text else ""
+    all_active_class = " is-active" if not grouped_view and not selected_multi_categories and selected_category == "all" and selected_shop == "all" and target_filter == "all" and not search_text else ""
+    target_filter_params = dict(base_filter_params)
+    if target_filter == "hit":
+        target_filter_params.pop("target", None)
+    else:
+        target_filter_params["target"] = "hit"
+    if grouped_view:
+        target_filter_params["view"] = "grouped"
+    target_filter_href = "/?" + urllib.parse.urlencode(target_filter_params, doseq=True)
+    target_filter_button = (
+        f'<a class="button{" is-active" if target_filter == "hit" else ""}" href="{escape(target_filter_href)}">{icon("target")} Wunschpreis</a>'
+        if target_price_filter_enabled(config)
+        else ""
+    )
     grouped_hidden = '<input type="hidden" name="view" value="grouped">' if grouped_view else ""
+    target_filter_hidden = '<input type="hidden" name="target" value="hit">' if target_filter == "hit" else ""
     group_toggle_control = (
         f'<button class="{group_active_class.strip()}" type="submit" name="view" value="grouped">{icon("list")} Gruppieren</button>'
     )
@@ -3931,6 +3990,18 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             f'{escape(category.get("name") or category["id"])}</option>'
             for category in categories
         )
+        selected_history_range = history_default_range(config)
+        history_range_options = "".join(
+            f'<option value="{escape(value)}" {"selected" if selected_history_range == value else ""}>{escape(label)}</option>'
+            for value, label in [
+                ("24h", "24 Stunden"),
+                ("7d", "7 Tage"),
+                ("14d", "14 Tage"),
+                ("1m", "1 Monat"),
+                ("6m", "6 Monate"),
+                ("12m", "12 Monate"),
+            ]
+        )
         move_dialog_id = f"move-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
         delete_product_dialog_id = f"delete-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
         reset_history_dialog_id = f"reset-history-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
@@ -3943,12 +4014,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '</div>'
             '<div class="history-controls">'
             '<div class="field"><label>Zeitraum</label><select data-history-range>'
-            '<option value="24h">24 Stunden</option>'
-            '<option value="7d">7 Tage</option>'
-            '<option value="14d">14 Tage</option>'
-            '<option value="1m" selected>1 Monat</option>'
-            '<option value="6m">6 Monate</option>'
-            '<option value="12m">12 Monate</option>'
+            f'{history_range_options}'
             '</select></div>'
             '<div class="history-window-actions">'
             '<button class="button" type="button" data-history-window="prev">← Zurück</button>'
@@ -4289,12 +4355,14 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
       <div class="panel-title-row"><h2>Filter</h2>{quick_category_html}</div>
       <form class="grid filter-grid" method="get" action="/">
         {grouped_hidden}
+        {target_filter_hidden}
         <div class="category-filter-control{' has-multi' if multi_category_enabled else ''}">
           {category_multi_button}
           <div class="field"><label>Kategorieauswahl</label><select name="category" onchange="this.form.submit()">{category_filter_options}</select></div>
         </div>
         <div class="field"><label>Shop</label><select name="shop" onchange="this.form.submit()">{shop_filter_options}</select></div>
         <div class="field"><label>Suchwort</label><input data-live-search name="q" value="{escape(search_text)}" placeholder="Produkt, Artikelnummer oder Kennung"></div>
+        {target_filter_button}
         <a class="button{all_active_class}" href="/?view=all">{icon('list')} Alle</a>
         {group_toggle_control}
       </form>
@@ -4944,6 +5012,10 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             <label class="toggle-line"><input type="checkbox" name="multi_category_filter_enabled" value="true" {'checked' if multi_category_filter_enabled(config) else ''}> Mehrfachauswahl für Kategorien aktivieren</label>
             <div class="small">Zeigt auf der Startseite links neben der Kategorieauswahl einen Button für mehrere Kategorien.</div>
           </div>
+          <div class="field" style="margin-top: 10px">
+            <label class="toggle-line"><input type="checkbox" name="target_price_filter_enabled" value="true" {'checked' if target_price_filter_enabled(config) else ''}> Wunschpreis-Filter anzeigen</label>
+            <div class="small">Zeigt in der Filterzeile einen Button, der nur Artikel mit erreichtem Wunschpreis anzeigt.</div>
+          </div>
           </div>
           <div class="settings-card">
           <div class="field">
@@ -4975,6 +5047,18 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             <label class="toggle-line"><input type="checkbox" name="target_price_extra_matches_enabled" value="true" {'checked' if target_price_extra_matches_enabled(config) else ''}> Wunschpreis auch bei Zusatzartikeln anzeigen</label>
             <div class="small">Bei Prospekt-Zusatztreffern kann die Zuordnung unsicher sein, wenn ein Suchwort mehrere unterschiedliche Angebote findet. Dort wird kompakt „WP“ angezeigt.</div>
           </div>
+          <div class="field" style="margin-top: 10px">
+            <label>Standardzeitraum Statistik</label>
+            <select name="history_default_range">
+              <option value="24h" {'selected' if history_default_range(config) == '24h' else ''}>24 Stunden</option>
+              <option value="7d" {'selected' if history_default_range(config) == '7d' else ''}>7 Tage</option>
+              <option value="14d" {'selected' if history_default_range(config) == '14d' else ''}>14 Tage</option>
+              <option value="1m" {'selected' if history_default_range(config) == '1m' else ''}>1 Monat</option>
+              <option value="6m" {'selected' if history_default_range(config) == '6m' else ''}>6 Monate</option>
+              <option value="12m" {'selected' if history_default_range(config) == '12m' else ''}>12 Monate</option>
+            </select>
+            <div class="small">Dieser Zeitraum ist vorausgewählt, wenn du die Preisstatistik eines Artikels öffnest.</div>
+          </div>
           </div>
           <div class="settings-card">
           <div class="field">
@@ -5004,6 +5088,8 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         <input type="hidden" name="api_settings_present" value="1">
         <label class="toggle-line"><input type="checkbox" name="api_enabled" value="true" {'checked' if api_enabled else ''}> JSON-API aktiv</label>
         <div class="small">Wenn deaktiviert, liefert die API nur den deaktiviert-Status als JSON zurück.</div>
+        <label class="toggle-line" style="margin-top: 12px"><input type="checkbox" name="allow_iframe_embedding" value="true" {'checked' if allow_iframe_embedding(config) else ''}> Einbettung in iframe erlauben</label>
+        <div class="small">Wenn aktiv, setzt die App keinen <code>X-Frame-Options</code>-Schutz. Das ist nötig, wenn die Oberfläche in andere Dashboards eingebettet werden soll.</div>
         <div class="actions settings-actions">
           <button class="primary" type="submit">Speichern</button>
           <a class="button" href="/api/prices" target="_blank" rel="noopener noreferrer">{icon('list')} JSON öffnen</a>
@@ -5932,9 +6018,9 @@ def api_progress() -> Response:
 
 @app.get("/api/products/<product_id>/history")
 def api_product_history(product_id: str) -> Response:
-    range_key = request.args.get("range", "1m")
+    range_key = request.args.get("range", "7d")
     if range_key not in {"24h", "7d", "14d", "1m", "6m", "12m"}:
-        range_key = "1m"
+        range_key = "7d"
     try:
         page = int(request.args.get("page", "1") or 1)
     except ValueError:
