@@ -43,7 +43,7 @@ from providers import (
     browser_cache_infos,
     clear_browser_cache,
 )
-from readers import aez_pdf_reader, generic_reader, manual_pdf_reader
+from readers import aez_pdf_reader, generic_reader, hit_reader, manual_pdf_reader
 from readers.rewe_reader import markets_from_config
 
 
@@ -1033,6 +1033,12 @@ body[data-theme="dark"] .visual-price-map {
   margin: 0;
   flex: 0 0 auto;
 }
+.toggle-line.inline-toggle {
+  display: inline-flex;
+  min-height: 0;
+  margin-left: 10px;
+  color: var(--muted);
+}
 .provider-choice-group {
   padding: 6px 0;
 }
@@ -1456,6 +1462,7 @@ document.querySelectorAll('[data-add-product-form]').forEach((form) => {
   if (!urlInput || !providerSelect) return;
   const providerRules = [
     ['rewe.de', 'rewe::', 'REWE'],
+    ['hit.de', 'hit::', 'HIT'],
     ['mueller.de', 'mueller::', 'Müller'],
     ['mediamarkt.de', 'mediamarkt::', 'MediaMarkt'],
     ['aldi-sued.de', 'aldi_sued::', 'ALDI Süd'],
@@ -3526,6 +3533,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     show_markets_dialog = request.args.get("markets_dialog") == "1"
     show_categories_dialog = request.args.get("categories_dialog") == "1"
     show_generic_dialog = request.args.get("generic_dialog") == "1"
+    show_hit_dialog = request.args.get("hit_dialog") == "1"
     show_add_product_dialog = request.args.get("add_product") == "1"
     show_add_pdf_dialog = request.args.get("add_pdf") == "1"
     delete_market_id = request.args.get("delete_market")
@@ -3727,6 +3735,47 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         else ""
     )
     generic_analysis = (state.get("generic_analysis") or {}) if show_generic_dialog else {}
+    hit_analysis = (state.get("hit_analysis") or {}) if show_hit_dialog else {}
+    hit_candidate_rows = []
+    for candidate in hit_analysis.get("candidates") or []:
+        image_html = (
+            f'<img class="product-thumb" src="{escape(str(candidate.get("image_url") or ""))}" alt="" loading="lazy" referrerpolicy="no-referrer">'
+            if candidate.get("image_url")
+            else ""
+        )
+        hit_candidate_rows.append(
+            '<div class="market-row">'
+            f'<div style="display:flex; gap:10px; align-items:center">{image_html}<div>'
+            f'<strong>{escape(str(candidate.get("title") or candidate.get("article_number") or ""))}</strong><br>'
+            f'<span class="small">{escape(str(candidate.get("overview") or ""))}'
+            f'{(" · " + escape(str(candidate.get("price_text")))) if candidate.get("price_text") else ""}</span>'
+            '</div></div>'
+            '<form method="post" action="/products">'
+            f'<input type="hidden" name="market_id" value="{escape(str(hit_analysis.get("market_raw") or ""))}">'
+            f'<input type="hidden" name="category_id" value="{escape(str(hit_analysis.get("category_id") or DEFAULT_CATEGORY_ID))}">'
+            f'<input type="hidden" name="id" value="{escape(str(hit_analysis.get("requested_id") or ""))}">'
+            f'<input type="hidden" name="product_url" value="{escape(str(candidate.get("url") or ""))}">'
+            f'<input type="hidden" name="article_number" value="{escape(str(candidate.get("article_number") or ""))}">'
+            f'<button type="submit">{icon("plus")} Auswählen</button>'
+            '</form>'
+            '</div>'
+        )
+    hit_dialog_html = (
+        f'<div class="dialog-backdrop"{" open" if show_hit_dialog else ""}>'
+        '<section class="dialog">'
+        '<div class="dialog-head">'
+        '<div><h2>HIT Artikel auswählen</h2>'
+        f'<div class="small">{escape(str(hit_analysis.get("url") or "HIT Sortiment"))}</div></div>'
+        '<a class="button dialog-close" href="/?add_product=1" aria-label="Schließen">×</a>'
+        '</div>'
+        '<div class="small">Die HIT-Seite enthält mehrere Artikel. Wähle den Artikel aus, den du überwachen möchtest.</div>'
+        + (
+            f'<div class="market-list" style="margin-top: 12px">{"".join(hit_candidate_rows)}</div>'
+            if hit_candidate_rows
+            else '<div class="notice">Keine HIT-Artikel auf dieser Seite gefunden.</div>'
+        )
+        + '</section></div>'
+    )
     generic_candidates = generic_analysis.get("candidates") or []
     generic_mode = str(generic_analysis.get("requested_mode") or generic_analysis.get("source") or "http")
     generic_is_browser = generic_mode == "browser"
@@ -4314,10 +4363,14 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             if str(market.get("market_id") or "") == "online"
             else market_address_html(market)
         )
+        market_flags = ""
+        if provider == "hit":
+            hit_app_label = "HIT App-Preis aktiv" if str(market.get("hit_use_app_price") or "").lower() == "true" else "HIT App-Preis aus"
+            market_flags = f'<span>{escape(hit_app_label)}</span>'
         market_rows.append(
             '<div class="market-row">'
             f'<div><strong>{escape(provider_label(provider))} - {escape(market.get("market_name") or "Markt")}</strong><br>'
-            f'<span class="small">{market_detail}<span>Markt {escape(str(market.get("market_id")))}</span></span></div>'
+            f'<span class="small">{market_detail}<span>Markt {escape(str(market.get("market_id")))}</span>{market_flags}</span></div>'
             f'<a class="button danger icon-only" href="/?markets_dialog=1&delete_market={escape(str(market.get("market_id")))}&provider={escape(provider)}" title="Markt löschen" aria-label="Markt löschen">{icon("trash")}</a>'
             '</div>'
         )
@@ -4328,11 +4381,22 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         hidden = "".join(
             f'<input type="hidden" name="{escape(key)}" value="{escape(str(value))}">'
             for key, value in market.items()
+            if not (provider == "hit" and key == "hit_use_app_price")
         )
+        hit_options = ""
+        if provider == "hit":
+            distance = str(market.get("distance_km") or "").strip()
+            distance_text = f'<span>{escape(distance)} km entfernt</span>' if distance else ""
+            hit_options = (
+                f'<span class="small">{distance_text}'
+                '<label class="toggle-line inline-toggle">'
+                '<input type="checkbox" name="hit_use_app_price" value="true"> HIT App-Preis verwenden'
+                '</label></span>'
+            )
         search_rows.append(
             '<div class="market-row">'
             f'<div><strong>{escape(provider_label(provider))} - {escape(market.get("market_name") or "Markt")}</strong><br>'
-            f'<span class="small">{market_address_html(market)}<span>Markt {escape(str(market.get("market_id")))}</span></span></div>'
+            f'<span class="small">{market_address_html(market)}<span>Markt {escape(str(market.get("market_id")))}</span></span>{hit_options}</div>'
             f'<form method="post" action="/markets">{hidden}<button>{icon("plus")} Speichern</button></form>'
             '</div>'
         )
@@ -4523,6 +4587,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
   </div>
   {edit_category_dialog}
   {delete_category_dialog}
+  {hit_dialog_html}
   {generic_dialog_html}
   {''.join(move_dialogs)}
   {''.join(delete_product_dialogs)}
@@ -6117,9 +6182,15 @@ def add_market() -> Response:
             "market_city",
             "market_match",
             "market_match_2",
+            "hit_market_url",
+            "hit_search_postal_code",
+            "hit_use_app_price",
+            "distance_km",
         )
     }
     market["provider"] = market.get("provider") or "rewe"
+    if market["provider"] == "hit":
+        market["hit_use_app_price"] = "true" if request.form.get("hit_use_app_price") == "true" else "false"
     if market["market_id"]:
         markets = config.setdefault("markets", [])
         if any(item.get("market_id") == market["market_id"] and market_provider(item) == market["provider"] for item in markets):
@@ -6186,6 +6257,27 @@ def add_product() -> Response:
         or provider_article_number_from_url(provider, product_url)
         or article_number_from_url(product_url)
     )
+    if provider == "hit" and product_url and not article_number and market_id:
+        category_id = request.form.get("category_id", DEFAULT_CATEGORY_ID).strip() or DEFAULT_CATEGORY_ID
+        requested_id = request.form.get("id", "").strip()
+        market_config = market_for_selection(provider, market_id, markets_from_config(config))
+        if market_config:
+            try:
+                candidates = hit_reader.list_hit_products(product_url, resolve_market(provider, market_config))
+                with state_lock:
+                    state = load_state()
+                    state["hit_analysis"] = {
+                        "url": product_url,
+                        "market_raw": f"{provider}::{market_id}",
+                        "category_id": category_id,
+                        "requested_id": requested_id,
+                        "candidates": candidates,
+                    }
+                    save_state(state)
+                return redirect(url_for("index", hit_dialog=1))
+            except Exception as exc:
+                set_notice(f"HIT-Artikelliste konnte nicht gelesen werden: {exc}")
+                return redirect(url_for("index", add_product=1))
     if not article_number or not market_id:
         return redirect(url_for("index"))
     category_id = request.form.get("category_id", DEFAULT_CATEGORY_ID).strip() or DEFAULT_CATEGORY_ID

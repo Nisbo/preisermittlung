@@ -6,6 +6,7 @@ from readers import (
     aez_pdf_reader,
     aldi_sued_reader,
     generic_reader,
+    hit_reader,
     manual_pdf_reader,
     mediamarkt_reader,
     mueller_reader,
@@ -41,6 +42,11 @@ PROVIDERS = {
     "rossmann": {
         "label": "Rossmann",
         "markets": False,
+        "kind": "shop",
+    },
+    "hit": {
+        "label": "HIT",
+        "markets": True,
         "kind": "shop",
     },
     "generic": {
@@ -95,6 +101,7 @@ def configure_user_agent(user_agent: str | None) -> None:
     mediamarkt_reader.set_user_agent(value)
     aldi_sued_reader.set_user_agent(value)
     rossmann_reader.set_user_agent(value)
+    hit_reader.set_user_agent(value)
     generic_reader.set_user_agent(value)
     aez_pdf_reader.set_user_agent(value)
     manual_pdf_reader.set_user_agent(value)
@@ -248,6 +255,8 @@ def find_markets(provider: str, postal_code: str) -> List[Dict[str, str]]:
         return virtual_markets(provider_id)
     if provider_id == "rossmann":
         return virtual_markets(provider_id)
+    if provider_id == "hit":
+        return hit_reader.find_hit_markets_by_postal_code(postal_code)
     if provider_id == "generic":
         return virtual_markets(provider_id)
     if provider_id == "aez_pdf":
@@ -269,6 +278,8 @@ def resolve_market(provider: str, market_config: Dict[str, str]) -> Dict[str, An
         return dict(market_config or virtual_markets(provider_id)[0])
     if provider_id == "rossmann":
         return dict(market_config or virtual_markets(provider_id)[0])
+    if provider_id == "hit":
+        return dict(market_config)
     if provider_id == "generic":
         return dict(market_config or virtual_markets(provider_id)[0])
     if provider_id == "aez_pdf":
@@ -290,6 +301,8 @@ def read_product(provider: str, product: Dict[str, str], market: Dict[str, Any],
         return aldi_sued_reader.read_aldi_sued_product(product, market, postal_code)
     if provider_id == "rossmann":
         return rossmann_reader.read_rossmann_product(product, market, postal_code)
+    if provider_id == "hit":
+        return hit_reader.read_hit_product(product, market, postal_code)
     if provider_id == "generic":
         return generic_reader.read_generic_product(product, market, postal_code)
     if provider_id == "aez_pdf":
@@ -334,6 +347,17 @@ def market_summary(provider: str, market: Dict[str, Any]) -> Dict[str, Any]:
             "name": "Rossmann Online",
             "company": "Rossmann",
             "service": "Online",
+        }
+    if provider_id == "hit":
+        return {
+            "provider": "hit",
+            "market_id": market.get("market_id"),
+            "name": market.get("market_name") or "HIT Markt",
+            "company": "HIT",
+            "street": market.get("market_street"),
+            "zip": market.get("postal_code"),
+            "city": market.get("market_city"),
+            "service": "Markt",
         }
     if provider_id == "generic":
         return {
@@ -399,6 +423,8 @@ def normalize_product_url(provider: str, url: str, article_number: str) -> str:
         return aldi_sued_reader.normalize_aldi_sued_url(url)
     if provider_id == "rossmann":
         return rossmann_reader.normalize_rossmann_url(url)
+    if provider_id == "hit":
+        return hit_reader.normalize_hit_url(url)
     if provider_id == "generic":
         return generic_reader.normalize_generic_url(url)
     if provider_id == "aez_pdf":
@@ -418,6 +444,8 @@ def provider_article_number_from_url(provider: str, url: str) -> str:
         return aldi_sued_reader.article_number_from_url(url)
     if provider_id == "rossmann":
         return rossmann_reader.article_number_from_url(url)
+    if provider_id == "hit":
+        return hit_reader.article_number_from_url(url)
     if provider_id == "generic":
         return generic_reader.article_number_from_url(url)
     if provider_id == "aez_pdf":
