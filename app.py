@@ -49,9 +49,10 @@ from readers.rewe_reader import markets_from_config
 
 STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
+PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.16-dev"
+APP_VERSION = "0.1.17-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -60,6 +61,7 @@ DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
 
 state_lock = threading.Lock()
+history_lock = threading.Lock()
 refresh_thread: Optional[threading.Thread] = None
 scheduler_thread: Optional[threading.Thread] = None
 scheduler_lock = threading.Lock()
@@ -243,6 +245,54 @@ th, td {
 th { font-size: 12px; color: var(--muted); background: var(--table-head); font-weight: 650; }
 tr:last-child td { border-bottom: 0; }
 .price { color: var(--accent); font-weight: 750; white-space: nowrap; }
+.price-cell-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.history-button {
+  width: 26px;
+  min-height: 26px;
+  padding: 0;
+  color: var(--muted);
+}
+.history-button svg { width: 14px; height: 14px; }
+.history-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+}
+.history-tabs { display: flex; gap: 8px; margin: 8px 0 12px; }
+.history-tab.is-active {
+  background: var(--accent-button);
+  border-color: var(--accent-button);
+  color: white;
+}
+.history-chart {
+  min-height: 240px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 96%, var(--fg) 4%);
+  overflow: hidden;
+}
+.history-chart svg {
+  display: block;
+  width: 100%;
+  height: 260px;
+}
+.history-chart-empty, .history-loading { padding: 18px; color: var(--muted); }
+.history-table-wrap { max-height: 360px; overflow: auto; }
+.history-row-error td { color: var(--warn); }
+.history-pagination {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.history-pagination button { min-width: 88px; }
 .target-price-badge {
   display: inline-flex;
   margin-top: 4px;
@@ -1184,6 +1234,7 @@ document.addEventListener('click', (event) => {
       opener.closest('.dialog-backdrop')?.style.removeProperty('display');
       target.style.removeProperty('display');
       target.classList.add('is-open');
+      if (target.dataset.historyDialog === 'true') loadHistoryDialog(target);
     }
     return;
   }
@@ -1205,6 +1256,126 @@ document.addEventListener('click', (event) => {
   if (toggle) {
     event.preventDefault();
     toggle.closest('.id-reveal')?.classList.toggle('is-open');
+  }
+});
+
+function centsToText(cents) {
+  if (cents === null || cents === undefined || Number.isNaN(Number(cents))) return '-';
+  return (Number(cents) / 100).toLocaleString('de-DE', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' €';
+}
+function formatHistoryTime(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('de-DE', {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+function renderHistoryChart(container, points) {
+  const okPoints = points.filter((item) => item.ok && item.price_cents !== null && item.price_cents !== undefined);
+  if (!points.length) {
+    container.innerHTML = '<div class="history-chart-empty">Noch keine Einträge für diesen Zeitraum.</div>';
+    return;
+  }
+  if (!okPoints.length) {
+    container.innerHTML = '<div class="history-chart-empty">In diesem Zeitraum gibt es nur fehlerhafte Abrufe.</div>';
+    return;
+  }
+  const width = 720;
+  const height = 260;
+  const pad = {left: 52, right: 18, top: 18, bottom: 40};
+  const times = points.map((item) => new Date(item.checked_at).getTime()).filter((value) => !Number.isNaN(value));
+  const minTime = Math.min(...times);
+  const maxTime = Math.max(...times);
+  const prices = okPoints.map((item) => Number(item.price_cents));
+  let minPrice = Math.min(...prices);
+  let maxPrice = Math.max(...prices);
+  if (minPrice === maxPrice) {
+    minPrice -= 1;
+    maxPrice += 1;
+  }
+  const xFor = (value) => {
+    const ts = new Date(value).getTime();
+    const ratio = maxTime === minTime ? 0.5 : (ts - minTime) / (maxTime - minTime);
+    return pad.left + ratio * (width - pad.left - pad.right);
+  };
+  const yFor = (cents) => {
+    const ratio = (Number(cents) - minPrice) / (maxPrice - minPrice);
+    return height - pad.bottom - ratio * (height - pad.top - pad.bottom);
+  };
+  const line = okPoints.map((item, index) => `${index ? 'L' : 'M'}${xFor(item.checked_at).toFixed(1)} ${yFor(item.price_cents).toFixed(1)}`).join(' ');
+  const circles = points.map((item) => {
+    const x = xFor(item.checked_at).toFixed(1);
+    const y = item.ok && item.price_cents !== null && item.price_cents !== undefined ? yFor(item.price_cents).toFixed(1) : (height - pad.bottom + 14).toFixed(1);
+    const color = item.ok ? 'var(--accent)' : 'var(--warn)';
+    const label = item.ok ? centsToText(item.price_cents) : (item.error || 'Fehler');
+    return `<circle cx="${x}" cy="${y}" r="4" fill="${color}"><title>${formatHistoryTime(item.checked_at)} · ${label}</title></circle>`;
+  }).join('');
+  container.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Preisverlauf">
+      <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}" stroke="var(--line)"/>
+      <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" stroke="var(--line)"/>
+      <text x="8" y="${pad.top + 6}" fill="var(--muted)" font-size="12">${centsToText(maxPrice)}</text>
+      <text x="8" y="${height - pad.bottom + 4}" fill="var(--muted)" font-size="12">${centsToText(minPrice)}</text>
+      <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+      ${circles}
+      <text x="${pad.left}" y="${height - 12}" fill="var(--muted)" font-size="12">${formatHistoryTime(new Date(minTime).toISOString())}</text>
+      <text x="${width - pad.right}" y="${height - 12}" text-anchor="end" fill="var(--muted)" font-size="12">${formatHistoryTime(new Date(maxTime).toISOString())}</text>
+    </svg>`;
+}
+function renderHistoryTable(container, data) {
+  const rows = data.rows || [];
+  const body = rows.map((item) => {
+    const error = item.ok ? '' : (item.error || 'Fehler');
+    return `<tr class="${item.ok ? '' : 'history-row-error'}">
+      <td>${formatHistoryTime(item.checked_at)}</td>
+      <td>${item.ok ? centsToText(item.price_cents) : '-'}</td>
+      <td>${item.ok ? 'OK' : 'Fehler'}</td>
+      <td>${error}</td>
+    </tr>`;
+  }).join('');
+  container.innerHTML = `<div class="history-table-wrap"><table>
+    <thead><tr><th>Zeitpunkt</th><th>Preis</th><th>Status</th><th>Info</th></tr></thead>
+    <tbody>${body || '<tr><td colspan="4">Keine Einträge.</td></tr>'}</tbody>
+  </table></div>`;
+}
+async function loadHistoryDialog(dialog, page = 1) {
+  const productId = dialog.dataset.productId || '';
+  const range = dialog.querySelector('[data-history-range]')?.value || '4weeks';
+  const chart = dialog.querySelector('[data-history-chart]');
+  const table = dialog.querySelector('[data-history-table]');
+  const pageInfo = dialog.querySelector('[data-history-page-info]');
+  if (chart) chart.innerHTML = '<div class="history-loading">Verlauf wird geladen...</div>';
+  if (table) table.innerHTML = '';
+  const response = await fetch(`/api/products/${encodeURIComponent(productId)}/history?range=${encodeURIComponent(range)}&page=${page}`, {cache: 'no-store'});
+  const data = await response.json();
+  dialog.dataset.historyPage = String(data.page || 1);
+  dialog.dataset.historyTotalPages = String(data.total_pages || 1);
+  if (chart) renderHistoryChart(chart, data.points || []);
+  if (table) renderHistoryTable(table, data);
+  if (pageInfo) pageInfo.textContent = `Seite ${data.page || 1} von ${data.total_pages || 1} · ${data.total || 0} Einträge`;
+  dialog.querySelectorAll('[data-history-page]').forEach((button) => {
+    const direction = button.dataset.historyPage;
+    button.disabled = direction === 'prev' ? (data.page || 1) <= 1 : (data.page || 1) >= (data.total_pages || 1);
+  });
+}
+document.addEventListener('change', (event) => {
+  const select = event.target.closest('[data-history-range]');
+  if (select) loadHistoryDialog(select.closest('[data-history-dialog]'), 1);
+});
+document.addEventListener('click', (event) => {
+  const tab = event.target.closest('[data-history-tab]');
+  if (tab) {
+    const dialog = tab.closest('[data-history-dialog]');
+    const mode = tab.dataset.historyTab;
+    dialog.querySelectorAll('[data-history-tab]').forEach((item) => item.classList.toggle('is-active', item === tab));
+    dialog.querySelectorAll('[data-history-panel]').forEach((panel) => panel.hidden = panel.dataset.historyPanel !== mode);
+    return;
+  }
+  const pageButton = event.target.closest('[data-history-page]');
+  if (pageButton) {
+    const dialog = pageButton.closest('[data-history-dialog]');
+    const current = Number(dialog.dataset.historyPage || '1');
+    const next = pageButton.dataset.historyPage === 'prev' ? current - 1 : current + 1;
+    loadHistoryDialog(dialog, next);
   }
 });
 
@@ -1597,6 +1768,7 @@ def icon(name: str) -> str:
         "search": '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
         "home": '<path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>',
         "list": '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+        "chart": '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/><circle cx="7" cy="15" r="1"/><circle cx="11" cy="11" r="1"/><circle cx="14" cy="14" r="1"/><circle cx="19" cy="7" r="1"/>',
         "image": '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
         "pdf": '<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/><path d="M8 13h1.5a1.5 1.5 0 0 0 0-3H8v7"/><path d="M13 10v7h1.5a2.5 2.5 0 0 0 0-5H13"/><path d="M18 10h3"/><path d="M18 13h2"/>',
         "settings": '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2 2 0 1 1-2.83 2.83l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.1 1.65V21a2 2 0 1 1-4 0v-.06a1.8 1.8 0 0 0-1.1-1.65 1.8 1.8 0 0 0-1.98.36l-.04.04a2 2 0 1 1-2.83-2.83l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.65-1.1H3a2 2 0 1 1 0-4h.06A1.8 1.8 0 0 0 4.7 8.8a1.8 1.8 0 0 0-.36-1.98l-.04-.04a2 2 0 1 1 2.83-2.83l.04.04A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1.1-1.65V3a2 2 0 1 1 4 0v.06A1.8 1.8 0 0 0 15.2 4.7a1.8 1.8 0 0 0 1.98-.36l.04-.04a2 2 0 1 1 2.83 2.83l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.1H21a2 2 0 1 1 0 4h-.06A1.8 1.8 0 0 0 19.4 15Z"/>',
@@ -2625,6 +2797,122 @@ def latest_change_at(products: List[Dict[str, Any]]) -> Optional[str]:
     return max(values) if values else None
 
 
+def history_timestamp_value(value: Any) -> float:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def append_price_history(product: Dict[str, Any], entry: Dict[str, Any], result: Optional[Dict[str, Any]], error: Optional[str]) -> None:
+    record = {
+        "checked_at": entry.get("last_checked_at") or now_iso(),
+        "product_id": product.get("id"),
+        "name": entry.get("name") or product.get("name"),
+        "provider": product.get("provider") or entry.get("provider"),
+        "provider_name": provider_label(product.get("provider") or entry.get("provider") or ""),
+        "market_id": product.get("market_id") or entry.get("market_id"),
+        "category_id": product.get("category_id") or entry.get("category_id"),
+        "ok": bool(result and not error),
+        "price_cents": result.get("price_cents") if result else None,
+        "price_text": result.get("price_text") if result else None,
+        "currency": (result or entry).get("currency") or "EUR",
+        "error": str(error or ""),
+    }
+    with history_lock:
+        PRICE_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with PRICE_HISTORY_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def remove_price_history(product_ids: set[str]) -> None:
+    if not product_ids or not PRICE_HISTORY_PATH.exists():
+        return
+    product_ids = {str(item) for item in product_ids}
+    with history_lock:
+        kept: List[str] = []
+        try:
+            with PRICE_HISTORY_PATH.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if str(record.get("product_id")) not in product_ids:
+                        kept.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            PRICE_HISTORY_PATH.write_text("".join(kept), encoding="utf-8")
+        except OSError:
+            return
+
+
+def history_since_timestamp(range_key: str) -> Optional[float]:
+    now = time.time()
+    ranges = {
+        "hour": 60 * 60,
+        "day": 24 * 60 * 60,
+        "week": 7 * 24 * 60 * 60,
+        "4weeks": 28 * 24 * 60 * 60,
+        "month": 31 * 24 * 60 * 60,
+        "year": 366 * 24 * 60 * 60,
+    }
+    seconds = ranges.get(range_key)
+    return now - seconds if seconds else None
+
+
+def read_price_history(product_id: str, range_key: str = "4weeks", page: int = 1, per_page: int = 25) -> Dict[str, Any]:
+    since = history_since_timestamp(range_key)
+    records: List[Dict[str, Any]] = []
+    if PRICE_HISTORY_PATH.exists():
+        with history_lock:
+            try:
+                with PRICE_HISTORY_PATH.open("r", encoding="utf-8", errors="replace") as handle:
+                    for line in handle:
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if str(record.get("product_id")) != str(product_id):
+                            continue
+                        ts = history_timestamp_value(record.get("checked_at"))
+                        if since is not None and ts < since:
+                            continue
+                        record["_ts"] = ts
+                        records.append(record)
+            except OSError:
+                records = []
+    records.sort(key=lambda item: float(item.get("_ts") or 0))
+    graph_points = [
+        {
+            "checked_at": item.get("checked_at"),
+            "price_cents": item.get("price_cents"),
+            "price_text": item.get("price_text"),
+            "ok": item.get("ok"),
+            "error": item.get("error"),
+        }
+        for item in records
+    ]
+    newest_first = list(reversed(records))
+    total = len(newest_first)
+    per_page = max(10, min(100, int(per_page or 25)))
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(int(page or 1), total_pages))
+    start = (page - 1) * per_page
+    page_records = newest_first[start : start + per_page]
+    for item in page_records:
+        item.pop("_ts", None)
+    return {
+        "ok": True,
+        "product_id": product_id,
+        "range": range_key,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "points": graph_points,
+        "rows": page_records,
+    }
+
+
 def update_state_for_product(product: Dict[str, Any], result: Optional[Dict[str, Any]], error: Optional[str]) -> None:
     with state_lock:
         state = load_state()
@@ -2667,6 +2955,7 @@ def update_state_for_product(product: Dict[str, Any], result: Optional[Dict[str,
                 entry.pop(stale_key, None)
         state["products"][product["id"]] = entry
         save_state(state)
+    append_price_history(product, entry, result, error)
 
 
 def save_product_url_state(product: Dict[str, Any], url: str) -> None:
@@ -3467,6 +3756,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     rows_by_category: Dict[str, List[str]] = {category["id"]: [] for category in categories}
     categories_by_id = category_lookup(config)
     image_dialogs = []
+    history_dialogs = []
     move_dialogs = []
     delete_product_dialogs = []
     for product in products:
@@ -3503,6 +3793,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         match_count = int(item_state.get("match_count") or 0)
         image_url = item_state.get("image_url")
         image_dialog_id = f"image-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
+        history_dialog_id = f"history-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
         thumbnail = (
             f'<button class="product-thumb-button" type="button" data-dialog-open="{escape(image_dialog_id)}" title="Bild groß anzeigen" aria-label="Bild groß anzeigen">'
             f'<img class="product-thumb" src="{escape(str(image_url))}" alt="" loading="lazy" referrerpolicy="no-referrer"></button>'
@@ -3562,6 +3853,38 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         )
         move_dialog_id = f"move-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
         delete_product_dialog_id = f"delete-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
+        history_dialogs.append(
+            f'<div class="dialog-backdrop" id="{escape(history_dialog_id)}" data-history-dialog="true" data-product-id="{escape(str(product.get("id", "")))}">'
+            '<section class="dialog">'
+            '<div class="dialog-head">'
+            f'<div><h2>Preisstatistik</h2><div class="small">{product_name}</div></div>'
+            '<button class="dialog-close" type="button" data-dialog-close aria-label="Schließen">×</button>'
+            '</div>'
+            '<div class="history-controls">'
+            '<div class="field"><label>Zeitraum</label><select data-history-range>'
+            '<option value="year">1 Jahr</option>'
+            '<option value="month">1 Monat</option>'
+            '<option value="4weeks" selected>4 Wochen</option>'
+            '<option value="week">1 Woche</option>'
+            '<option value="day">1 Tag</option>'
+            '<option value="hour">1 Stunde</option>'
+            '<option value="all">Alles</option>'
+            '</select></div>'
+            '</div>'
+            '<div class="history-tabs">'
+            '<button class="history-tab is-active" type="button" data-history-tab="chart">Verlauf</button>'
+            '<button class="history-tab" type="button" data-history-tab="log">Log</button>'
+            '</div>'
+            '<div data-history-panel="chart"><div class="history-chart" data-history-chart><div class="history-loading">Verlauf wird geladen...</div></div></div>'
+            '<div data-history-panel="log" hidden>'
+            '<div data-history-table><div class="history-loading">Log wird geladen...</div></div>'
+            '<div class="history-pagination">'
+            '<button type="button" data-history-page="prev">Zurück</button>'
+            '<span class="small" data-history-page-info>Seite 1 von 1</span>'
+            '<button type="button" data-history-page="next">Weiter</button>'
+            '</div></div>'
+            '</section></div>'
+        )
         product_mqtt_notice = pop_product_mqtt_notice(state, str(product.get("id", "")))
         product_mqtt_notice_html = f'<div class="notice" style="margin-top: 10px">{escape(product_mqtt_notice)}</div>' if product_mqtt_notice else ""
         target_price_value = format_price_input(target_cents)
@@ -3633,13 +3956,20 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
                 ' · <span class="id-reveal">'
                 f'<button class="id-label" type="button" data-id-toggle>Kennung</button><span class="id-tooltip">{product_id}</span></span>'
             )
+        price_html = (
+            '<span class="price-cell-tools">'
+            f'<span>{escape(format_cents(item_state.get("price_cents")))}</span>'
+            f'<button class="button history-button" type="button" data-dialog-open="{escape(history_dialog_id)}" title="Preisverlauf" aria-label="Preisverlauf">{icon("chart")}</button>'
+            '</span>'
+            f'{price_extra}{target_badge}'
+        )
         row_html = (
             f"<tr id=\"product-{escape(product.get('id', ''))}\"{target_row_class}>"
             f"<td data-label=\"Produkt\" data-sort-value=\"{escape(product.get('name') or product.get('id'))}\"><div class=\"product-cell\">{thumbnail}<div><strong>{product_name}</strong><br>"
             f"<div class=\"small\">{product_meta}</div>"
             f"{category_chip_html(category, '/?category=' + category_id)}{enabled_badge}</div></div></td>"
             f"<td data-label=\"Markt\" data-sort-value=\"{escape(product_provider_label + ' ' + product_market_sort)}\"><span class=\"small\"><strong>{escape(product_provider_label)}</strong>{product_market_display}</span></td>"
-            f"<td data-label=\"Preis\" class=\"price\" data-sort-value=\"{int(item_state.get('price_cents') or -1)}\">{escape(format_cents(item_state.get('price_cents')))}{price_extra}{target_badge}</td>"
+            f"<td data-label=\"Preis\" class=\"price\" data-sort-value=\"{int(item_state.get('price_cents') or -1)}\">{price_html}</td>"
             f"<td data-label=\"Grundpreis\">{unit_price_html(item_state)}</td>"
             f"<td data-label=\"Geprüft\" data-sort-value=\"{escape(str(item_state.get('last_checked_at') or ''))}\"><span class=\"small\">{escape(format_datetime_de(item_state.get('last_checked_at')))}</span></td>"
             f"<td data-label=\"Geändert\" data-sort-value=\"{escape(str(item_state.get('last_changed_at') or ''))}\"><span class=\"small\">{escape(format_datetime_de(item_state.get('last_changed_at')))}</span></td>"
@@ -4006,6 +4336,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
   {''.join(move_dialogs)}
   {''.join(delete_product_dialogs)}
   {''.join(image_dialogs)}
+  {''.join(history_dialogs)}
   <script>{SCRIPT}</script>
 </body>
 </html>"""
@@ -5491,6 +5822,18 @@ def api_progress() -> Response:
         return jsonify(dict(progress))
 
 
+@app.get("/api/products/<product_id>/history")
+def api_product_history(product_id: str) -> Response:
+    range_key = request.args.get("range", "4weeks")
+    if range_key not in {"year", "month", "4weeks", "week", "day", "hour", "all"}:
+        range_key = "4weeks"
+    try:
+        page = int(request.args.get("page", "1") or 1)
+    except ValueError:
+        page = 1
+    return jsonify(read_price_history(product_id, range_key, page, 25))
+
+
 @app.get("/api/update-status")
 def api_update_status() -> Response:
     return jsonify(update_service_status())
@@ -5593,6 +5936,7 @@ def delete_market(market_id: str) -> Response:
             for product_id in remove_ids:
                 state.setdefault("products", {}).pop(product_id, None)
             save_state(state)
+        remove_price_history({str(product_id) for product_id in remove_ids})
 
     config["markets"] = [
         market
@@ -5946,6 +6290,7 @@ def delete_product(product_id: str) -> Response:
         state = load_state()
         state.setdefault("products", {}).pop(product_id, None)
         save_state(state)
+    remove_price_history({product_id})
     return redirect(url_for("index"))
 
 
@@ -6056,6 +6401,7 @@ def delete_category(category_id: str) -> Response:
             product_state.pop(product_id, None)
         state["products"] = product_state
         save_state(state)
+        remove_price_history(deleted_ids)
     else:
         for product in config.get("products", []):
             if product_category_id(product) == category_id:

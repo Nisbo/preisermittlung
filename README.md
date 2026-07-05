@@ -80,6 +80,7 @@ nicht ins Git-Repo:
 
 - `config.yaml`
 - `state.json`
+- `price_history.jsonl`
 - `generated/`
 - `manual_pdfs/`
 - `.browser-cache/`
@@ -87,10 +88,10 @@ nicht ins Git-Repo:
 - `.playwright-browsers/`
 - `tmp/`
 
-Updates dürfen diese Dateien nicht überschreiben. `config.yaml`, `state.json`
-und `manual_pdfs/` enthalten Nutzerdaten. `generated/`, `.browser-cache/`,
-`.pdf-cache/`, `.playwright-browsers/` und `tmp/` sind Cache- oder
-Laufzeitdaten und können bei Bedarf neu erzeugt werden.
+Updates dürfen diese Dateien nicht überschreiben. `config.yaml`, `state.json`,
+`price_history.jsonl` und `manual_pdfs/` enthalten Nutzerdaten. `generated/`,
+`.browser-cache/`, `.pdf-cache/`, `.playwright-browsers/` und `tmp/` sind
+Cache- oder Laufzeitdaten und können bei Bedarf neu erzeugt werden.
 
 ## Aufbau der `config.yaml`
 

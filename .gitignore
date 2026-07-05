@@ -11,6 +11,7 @@ env/
 # never be overwritten by releases or git updates.
 config.yaml
 state.json
+price_history.jsonl
 generated/
 manual_pdfs/
 .browser-cache/

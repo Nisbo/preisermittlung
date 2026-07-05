@@ -49,10 +49,14 @@ chmod +x scripts/update.sh scripts/gui_update.sh
 if [[ ! -f state.json ]]; then
   printf '{}\n' > state.json
 fi
+if [[ ! -f price_history.jsonl ]]; then
+  : > price_history.jsonl
+fi
 if id "${RUN_USER}" >/dev/null 2>&1; then
   chown -R "${RUN_USER}:${RUN_USER}" generated manual_pdfs tmp .browser-cache .pdf-cache .playwright-browsers
   [[ -f config.yaml ]] && chown "${RUN_USER}:${RUN_USER}" config.yaml
   [[ -f state.json ]] && chown "${RUN_USER}:${RUN_USER}" state.json
+  [[ -f price_history.jsonl ]] && chown "${RUN_USER}:${RUN_USER}" price_history.jsonl
 fi
 
 cat > "${UPDATE_SERVICE_FILE}" <<EOF

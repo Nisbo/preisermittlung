@@ -73,6 +73,7 @@ if [[ "${SOURCE_DIR}" != "${APP_DIR}" ]]; then
     --exclude '.DS_Store' \
     --exclude 'config.yaml' \
     --exclude 'state.json' \
+    --exclude 'price_history.jsonl' \
     --exclude 'generated' \
     --exclude 'manual_pdfs' \
     --exclude '.browser-cache' \
@@ -110,6 +111,9 @@ fi
 if [[ ! -f "${APP_DIR}/state.json" ]]; then
   printf '{}\n' > "${APP_DIR}/state.json"
 fi
+if [[ ! -f "${APP_DIR}/price_history.jsonl" ]]; then
+  : > "${APP_DIR}/price_history.jsonl"
+fi
 
 python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/python" -m pip install --upgrade pip wheel
@@ -123,6 +127,7 @@ fi
 chown -R "${RUN_USER}:${RUN_USER}" \
   "${APP_DIR}/config.yaml" \
   "${APP_DIR}/state.json" \
+  "${APP_DIR}/price_history.jsonl" \
   "${APP_DIR}/generated" \
   "${APP_DIR}/manual_pdfs" \
   "${APP_DIR}/tmp" \
