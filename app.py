@@ -52,7 +52,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.18-dev"
+APP_VERSION = "0.1.19-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -1241,7 +1241,10 @@ document.addEventListener('click', (event) => {
       opener.closest('.dialog-backdrop')?.style.removeProperty('display');
       target.style.removeProperty('display');
       target.classList.add('is-open');
-      if (target.dataset.historyDialog === 'true') loadHistoryDialog(target);
+      if (target.dataset.historyDialog === 'true') {
+        target.dataset.historyOffset = '0';
+        loadHistoryDialog(target, 1, 0);
+      }
     }
     return;
   }
@@ -1275,6 +1278,12 @@ function formatHistoryTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString('de-DE', {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+function formatHistoryDate(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit', year:'numeric'});
 }
 function renderHistoryChart(container, data) {
   const points = data.points || [];
@@ -1349,13 +1358,14 @@ function renderHistoryTable(container, data) {
     <tbody>${body || '<tr><td colspan="4">Keine Einträge.</td></tr>'}</tbody>
   </table></div>`;
 }
-async function loadHistoryDialog(dialog, page = 1) {
+async function loadHistoryDialog(dialog, page = 1, offsetOverride = null) {
   const productId = dialog.dataset.productId || '';
   const range = dialog.querySelector('[data-history-range]')?.value || '7d';
-  const offset = Number(dialog.dataset.historyOffset || '0');
+  const offset = offsetOverride === null ? Number(dialog.dataset.historyOffset || '0') : Number(offsetOverride || 0);
   const chart = dialog.querySelector('[data-history-chart]');
   const table = dialog.querySelector('[data-history-table]');
   const pageInfo = dialog.querySelector('[data-history-page-info]');
+  const windowLabel = dialog.querySelector('[data-history-window-label]');
   if (chart) chart.innerHTML = '<div class="history-loading">Verlauf wird geladen...</div>';
   if (table) table.innerHTML = '';
   const response = await fetch(`/api/products/${encodeURIComponent(productId)}/history?range=${encodeURIComponent(range)}&page=${page}&offset=${offset}`, {cache: 'no-store'});
@@ -1365,7 +1375,9 @@ async function loadHistoryDialog(dialog, page = 1) {
   dialog.dataset.historyOffset = String(data.offset || 0);
   if (chart) renderHistoryChart(chart, data);
   if (table) renderHistoryTable(table, data);
-  if (pageInfo) pageInfo.textContent = `${data.range_label || 'Zeitraum'} · Seite ${data.page || 1} von ${data.total_pages || 1} · ${data.total || 0} Einträge`;
+  const dateRangeText = `${formatHistoryDate(data.window_start)} bis ${formatHistoryDate(data.window_end)}`;
+  if (windowLabel) windowLabel.textContent = dateRangeText;
+  if (pageInfo) pageInfo.textContent = `${data.range_label || 'Zeitraum'} · ${dateRangeText} · Seite ${data.page || 1} von ${data.total_pages || 1} · ${data.total || 0} Einträge`;
   dialog.querySelectorAll('[data-history-page]').forEach((button) => {
     const direction = button.dataset.historyPage;
     button.disabled = direction === 'prev' ? (data.page || 1) <= 1 : (data.page || 1) >= (data.total_pages || 1);
@@ -1374,15 +1386,25 @@ async function loadHistoryDialog(dialog, page = 1) {
     button.disabled = button.dataset.historyWindow === 'next' && !data.can_forward;
   });
 }
+function historyWindowStep(button, step) {
+  const dialog = button.closest('[data-history-dialog]');
+  if (!dialog) return false;
+  const current = Number(dialog.dataset.historyOffset || '0');
+  const next = Math.max(0, current + Number(step || 0));
+  dialog.dataset.historyOffset = String(next);
+  loadHistoryDialog(dialog, 1, next);
+  return false;
+}
 document.addEventListener('change', (event) => {
   const select = event.target.closest('[data-history-range]');
   if (select) {
     const dialog = select.closest('[data-history-dialog]');
     dialog.dataset.historyOffset = '0';
-    loadHistoryDialog(dialog, 1);
+    loadHistoryDialog(dialog, 1, 0);
   }
 });
 document.addEventListener('click', (event) => {
+  if (event.defaultPrevented) return;
   const tab = event.target.closest('[data-history-tab]');
   if (tab) {
     const dialog = tab.closest('[data-history-dialog]');
@@ -1393,6 +1415,7 @@ document.addEventListener('click', (event) => {
   }
   const pageButton = event.target.closest('[data-history-page]');
   if (pageButton) {
+    event.preventDefault();
     const dialog = pageButton.closest('[data-history-dialog]');
     const current = Number(dialog.dataset.historyPage || '1');
     const next = pageButton.dataset.historyPage === 'prev' ? current - 1 : current + 1;
@@ -1401,11 +1424,13 @@ document.addEventListener('click', (event) => {
   }
   const windowButton = event.target.closest('[data-history-window]');
   if (windowButton) {
+    event.preventDefault();
     const dialog = windowButton.closest('[data-history-dialog]');
+    if (!dialog) return;
     const current = Number(dialog.dataset.historyOffset || '0');
     const next = windowButton.dataset.historyWindow === 'prev' ? current + 1 : Math.max(0, current - 1);
     dialog.dataset.historyOffset = String(next);
-    loadHistoryDialog(dialog, 1);
+    loadHistoryDialog(dialog, 1, next);
   }
 });
 
@@ -4017,8 +4042,9 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             f'{history_range_options}'
             '</select></div>'
             '<div class="history-window-actions">'
-            '<button class="button" type="button" data-history-window="prev">← Zurück</button>'
-            '<button class="button" type="button" data-history-window="next">Weiter →</button>'
+            '<button class="button" type="button" data-history-window="prev" onclick="return historyWindowStep(this, 1)">← Zurück</button>'
+            '<button class="button" type="button" data-history-window="next" onclick="return historyWindowStep(this, -1)">Weiter →</button>'
+            '<span class="small" data-history-window-label></span>'
             '</div>'
             '</div>'
             '<div class="history-tabs">'
