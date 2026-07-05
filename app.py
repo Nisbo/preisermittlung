@@ -51,7 +51,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.9-dev"
+APP_VERSION = "0.1.10-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -918,6 +918,14 @@ body[data-theme="dark"] .visual-price-map {
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--panel) 92%, var(--fg) 8%);
 }
+.update-log-output {
+  min-height: 280px;
+  resize: vertical;
+  white-space: pre;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
 .settings-card .field:last-child {
   margin-bottom: 0;
 }
@@ -971,6 +979,18 @@ body[data-theme="dark"] .visual-price-map {
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 14px;
+}
+.settings-tab {
+  min-height: 36px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  background: var(--panel);
+  color: var(--fg);
+  text-decoration: none;
 }
 .settings-tab.is-active {
   background: var(--accent-button);
@@ -1859,7 +1879,7 @@ def render_notice_html(message: Optional[str]) -> str:
     content = escape(str(message))
     content = content.replace(
         "Nutze Settings &gt; Abfragen",
-        '<a href="/settings#queries">Nutze Settings &gt; Abfragen</a>',
+        '<a href="/settings?tab=queries">Nutze Settings &gt; Abfragen</a>',
     )
     content = content.replace("\n", "<br>")
     return f'<div class="notice" data-flash-notice>{content}</div>'
@@ -4046,6 +4066,10 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     extra_matches_mode = pdf_extra_matches_display_mode(config)
     extra_matches_open = pdf_extra_matches_expanded(config)
     home_view = default_home_view(config)
+    valid_settings_tabs = ["info", "home", "queries", "pdfs", "api", "browser", "mqtt", "backup", "updates"]
+    active_settings_tab = request.args.get("tab", "").strip().lower()
+    if active_settings_tab not in valid_settings_tabs:
+        active_settings_tab = "mqtt" if request.args.get("mqtt_product") else "info"
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
     notice = pop_notice(state)
     notice_html = render_notice_html(notice)
@@ -4085,8 +4109,9 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         indent=2,
     )
     update_status = update_service_status()
+    legacy_update_result = state.pop("update_result", None)
     update_start_result = state.pop("update_start_result", None) or {}
-    if update_start_result:
+    if update_start_result or legacy_update_result:
         save_state(state)
     update_start_html = ""
     if update_start_result:
@@ -4099,7 +4124,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             '</div>'
         )
     update_log_html = (
-        f'<pre><code>{escape(update_status["log"])}</code></pre>'
+        f'<textarea class="code-preview update-log-output" readonly>{escape(update_status["log"])}</textarea>'
         if update_status.get("log")
         else '<div class="small">Noch kein Update-Log vorhanden.</div>'
     )
@@ -4254,17 +4279,17 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
       </div>
     </div>
     <nav class="settings-tabs" aria-label="Settings Bereiche">
-      <button class="settings-tab" type="button" data-settings-tab="info">Info</button>
-      <button class="settings-tab" type="button" data-settings-tab="home">Startseite</button>
-      <button class="settings-tab" type="button" data-settings-tab="queries">Abfragen</button>
-      <button class="settings-tab" type="button" data-settings-tab="pdfs">Manuelle PDFs</button>
-      <button class="settings-tab" type="button" data-settings-tab="api">JSON-API</button>
-      <button class="settings-tab" type="button" data-settings-tab="browser">Browser</button>
-      <button class="settings-tab" type="button" data-settings-tab="mqtt">MQTT</button>
-      <button class="settings-tab" type="button" data-settings-tab="backup">Backup</button>
-      <button class="settings-tab" type="button" data-settings-tab="updates">Update</button>
+      <a class="settings-tab {'is-active' if active_settings_tab == 'info' else ''}" href="/settings?tab=info" data-settings-tab="info">Info</a>
+      <a class="settings-tab {'is-active' if active_settings_tab == 'home' else ''}" href="/settings?tab=home" data-settings-tab="home">Startseite</a>
+      <a class="settings-tab {'is-active' if active_settings_tab == 'queries' else ''}" href="/settings?tab=queries" data-settings-tab="queries">Abfragen</a>
+      <a class="settings-tab {'is-active' if active_settings_tab == 'pdfs' else ''}" href="/settings?tab=pdfs" data-settings-tab="pdfs">Manuelle PDFs</a>
+      <a class="settings-tab {'is-active' if active_settings_tab == 'api' else ''}" href="/settings?tab=api" data-settings-tab="api">JSON-API</a>
+      <a class="settings-tab {'is-active' if active_settings_tab == 'browser' else ''}" href="/settings?tab=browser" data-settings-tab="browser">Browser</a>
+      <a class="settings-tab {'is-active' if active_settings_tab == 'mqtt' else ''}" href="/settings?tab=mqtt" data-settings-tab="mqtt">MQTT</a>
+      <a class="settings-tab {'is-active' if active_settings_tab == 'backup' else ''}" href="/settings?tab=backup" data-settings-tab="backup">Backup</a>
+      <a class="settings-tab {'is-active' if active_settings_tab == 'updates' else ''}" href="/settings?tab=updates" data-settings-tab="updates">Update</a>
     </nav>
-    <section class="panel" data-settings-panel="info">
+    <section class="panel" data-settings-panel="info" {'hidden' if active_settings_tab != 'info' else ''}>
       <h2>Info</h2>
       <div class="settings-grid align-start">
         <div class="settings-card settings-card-full">
@@ -4289,7 +4314,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         {install_info_html}
       </div>
     </section>
-    <section class="panel" data-settings-panel="queries">
+    <section class="panel" data-settings-panel="queries" {'hidden' if active_settings_tab != 'queries' else ''}>
       <h2>Abfragen</h2>
       <section class="settings-card settings-card-full" data-settings-progress-box{settings_progress_hidden}>
         <h3>Aktualisierung</h3>
@@ -4345,7 +4370,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         </div>
       </form>
     </section>
-    <section class="panel" data-settings-panel="pdfs">
+    <section class="panel" data-settings-panel="pdfs" {'hidden' if active_settings_tab != 'pdfs' else ''}>
       <h2>Manuelle PDFs</h2>
       <form method="post" action="/manual-pdfs" enctype="multipart/form-data" data-pdf-processing="PDF wird hochgeladen und vorhandene Suchwörter werden geprüft...">
         <div class="settings-card">
@@ -4370,7 +4395,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
       </form>
       <div class="market-list" style="margin-top: 12px">{manual_pdf_rows}</div>
     </section>
-    <section class="panel" data-settings-panel="home">
+    <section class="panel" data-settings-panel="home" {'hidden' if active_settings_tab != 'home' else ''}>
       <h2>Startseite</h2>
       <form method="post" action="/settings">
         <input type="hidden" name="home_settings_present" value="1">
@@ -4442,7 +4467,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         </div>
       </form>
     </section>
-    <section class="panel" data-settings-panel="api">
+    <section class="panel" data-settings-panel="api" {'hidden' if active_settings_tab != 'api' else ''}>
       <h2>JSON-API</h2>
       <form method="post" action="/settings">
         <input type="hidden" name="api_settings_present" value="1">
@@ -4454,12 +4479,12 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         </div>
       </form>
     </section>
-    <section class="panel" data-settings-panel="browser">
+    <section class="panel" data-settings-panel="browser" {'hidden' if active_settings_tab != 'browser' else ''}>
       <h2>Browser-Module</h2>
       <div class="small">Wird aktuell für Anbieter genutzt, die echte Browserausführung brauchen. App-Prozessspeicher aktuell: {escape(current_process_memory_text())}. Chromium-Arbeitsspeicher fällt nur während einer laufenden Abfrage an.</div>
       <div class="market-list" style="margin-top: 12px">{browser_cache_rows}</div>
     </section>
-    <section class="panel" data-settings-panel="mqtt">
+    <section class="panel" data-settings-panel="mqtt" {'hidden' if active_settings_tab != 'mqtt' else ''}>
       <h2>MQTT</h2>
       <form method="post" action="/settings">
         <div class="settings-grid">
@@ -4518,7 +4543,8 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         <h3>Home Assistant Discovery Testarea</h3>
         <div class="small">Hier siehst du den MQTT-Aufbau für genau einen Artikel. Gesendet wird nur über die Buttons.</div>
         <div class="notice" style="margin-top: 10px" data-mqtt-test-status {'hidden' if not mqtt_test_notice_html else ''}>{escape(str((mqtt_test_notice or {}).get("message") or ""))}</div>
-        <form class="settings-grid align-start" method="get" action="/settings#mqtt" style="margin-top: 10px" data-no-scroll="true">
+        <form class="settings-grid align-start" method="get" action="/settings" style="margin-top: 10px" data-no-scroll="true">
+          <input type="hidden" name="tab" value="mqtt">
           <div class="field">
             <label>Artikel suchen</label>
             <input type="search" data-option-filter="#mqtt-preview-product" placeholder="Name, Anbieter oder Kennung">
@@ -4549,7 +4575,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         </div>
       </div>
     </section>
-    <section class="panel" data-settings-panel="backup">
+    <section class="panel" data-settings-panel="backup" {'hidden' if active_settings_tab != 'backup' else ''}>
       <h2>Backup</h2>
       <div class="settings-grid align-start">
         <div class="settings-card">
@@ -4585,7 +4611,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         {backup_import_html}
       </div>
     </section>
-    <section class="panel" data-settings-panel="updates">
+    <section class="panel" data-settings-panel="updates" {'hidden' if active_settings_tab != 'updates' else ''}>
       <h2>Update</h2>
       <div class="settings-grid align-start">
         <div class="settings-card">
@@ -4908,13 +4934,10 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
       settingsPanels.forEach((panel) => {{
         panel.hidden = panel.dataset.settingsPanel !== name;
       }});
-      if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
     }};
-    settingsTabs.forEach((tab) => {{
-      tab.addEventListener('click', () => activateSettingsTab(tab.dataset.settingsTab));
-    }});
-    const initialSettingsTab = location.hash || (new URLSearchParams(location.search).has('mqtt_product') ? '#mqtt' : '#info');
-    activateSettingsTab(initialSettingsTab.slice(1));
+    const settingsParams = new URLSearchParams(location.search);
+    const initialSettingsTab = settingsParams.get('tab') || (location.hash ? location.hash.slice(1) : '') || (settingsParams.has('mqtt_product') ? 'mqtt' : 'info');
+    activateSettingsTab(initialSettingsTab);
     const restoreScrollY = sessionStorage.getItem('preisermittlung.restoreScrollY');
     if (restoreScrollY !== null) {{
       sessionStorage.removeItem('preisermittlung.restoreScrollY');
@@ -4965,7 +4988,7 @@ def save_settings() -> Response:
         anchor = "pdfs"
     elif "mqtt_client_id" in request.form:
         anchor = "mqtt"
-    return redirect(url_for("settings_page", _anchor=anchor))
+    return redirect(url_for("settings_page", tab=anchor))
 
 
 @app.post("/settings/refresh-providers")
@@ -4984,13 +5007,13 @@ def refresh_selected_providers() -> Response:
     provider_ids = sorted(set(provider_ids), key=lambda provider_id: provider_label(provider_id).casefold())
     if not provider_ids:
         set_notice("Bitte mindestens einen Anbieter auswählen.")
-        return redirect(url_for("settings_page", _anchor="queries"))
+        return redirect(url_for("settings_page", tab="queries"))
     labels = ", ".join(provider_label(provider_id) for provider_id in provider_ids)
     if start_refresh(refresh_kind="manual", provider_ids=provider_ids):
         set_notice(f"Aktualisierung gestartet: {labels}")
     else:
         set_notice("Es läuft bereits eine Aktualisierung.")
-    return redirect(url_for("settings_page", _anchor="queries"))
+    return redirect(url_for("settings_page", tab="queries"))
 
 
 @app.post("/settings/update/start")
@@ -5005,7 +5028,7 @@ def settings_start_update() -> Response:
         state["update_start_result"] = result
         state["notice"] = result.get("message") or ("Serverupdate gestartet." if result.get("ok") else "Serverupdate fehlgeschlagen.")
         save_state(state)
-    return redirect(url_for("settings_page", _anchor="updates"))
+    return redirect(url_for("settings_page", tab="updates"))
 
 
 @app.get("/settings/mqtt/preview")
@@ -5058,7 +5081,7 @@ def test_mqtt() -> Response:
             state["mqtt_last_test"] = {"ok": False, "message": message, "checked_at": now_iso()}
             save_state(state)
         set_notice(message)
-    return redirect(url_for("settings_page", _anchor="mqtt"))
+    return redirect(url_for("settings_page", tab="mqtt"))
 
 
 @app.get("/backup/export")
@@ -5068,7 +5091,7 @@ def export_backup() -> Response:
     include_pdfs = request.args.get("pdfs") == "true"
     if not (include_config or include_state or include_pdfs):
         set_notice("Bitte mindestens einen Backup-Bereich auswählen.")
-        return redirect(url_for("settings_page", _anchor="backup"))
+        return redirect(url_for("settings_page", tab="backup"))
     payload = create_backup_zip(include_config, include_state, include_pdfs)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     filename = f"preisermittlung_backup_{timestamp}.zip"
@@ -5089,10 +5112,10 @@ def analyze_backup_import() -> Response:
         upload = request.files.get("backup_file")
         if not upload or not getattr(upload, "filename", ""):
             set_notice("Keine Backup-ZIP ausgewählt.")
-            return redirect(url_for("settings_page", _anchor="backup"))
+            return redirect(url_for("settings_page", tab="backup"))
         if not str(upload.filename).lower().endswith(".zip"):
             set_notice("Bitte eine ZIP-Datei auswählen.")
-            return redirect(url_for("settings_page", _anchor="backup"))
+            return redirect(url_for("settings_page", tab="backup"))
         BACKUP_IMPORT_PATH.mkdir(parents=True, exist_ok=True)
         token = uuid.uuid4().hex
         target = BACKUP_IMPORT_PATH / f"{token}.zip"
@@ -5101,17 +5124,17 @@ def analyze_backup_import() -> Response:
     except zipfile.BadZipFile:
         target.unlink(missing_ok=True)
         set_notice("Die Datei ist keine gültige ZIP-Datei.")
-        return redirect(url_for("settings_page", _anchor="backup"))
+        return redirect(url_for("settings_page", tab="backup"))
     except Exception as exc:
         app.logger.exception("Backup import analysis failed")
         if "target" in locals():
             target.unlink(missing_ok=True)
         set_notice(f"Backup konnte nicht geprüft werden: {exc}")
-        return redirect(url_for("settings_page", _anchor="backup"))
+        return redirect(url_for("settings_page", tab="backup"))
     if not backup_has_components(info):
         target.unlink(missing_ok=True)
         set_notice("In dieser ZIP-Datei wurden keine bekannten Backup-Daten gefunden.")
-        return redirect(url_for("settings_page", _anchor="backup"))
+        return redirect(url_for("settings_page", tab="backup"))
     with state_lock:
         state = load_state()
         remove_pending_backup_import(state)
@@ -5123,7 +5146,7 @@ def analyze_backup_import() -> Response:
         }
         save_state(state)
     set_notice("Backup geprüft. Bitte auswählen, was wiederhergestellt werden soll.")
-    return redirect(url_for("settings_page", _anchor="backup"))
+    return redirect(url_for("settings_page", tab="backup"))
 
 
 @app.get("/backup/import/cancel")
@@ -5133,7 +5156,7 @@ def cancel_backup_import() -> Response:
         remove_pending_backup_import(state)
         save_state(state)
     set_notice("Backup-Import abgebrochen.")
-    return redirect(url_for("settings_page", _anchor="backup"))
+    return redirect(url_for("settings_page", tab="backup"))
 
 
 @app.post("/backup/import/confirm")
@@ -5141,22 +5164,22 @@ def confirm_backup_import() -> Response:
     token = request.form.get("token", "").strip()
     if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
         set_notice("Backup-Import nicht gefunden.")
-        return redirect(url_for("settings_page", _anchor="backup"))
+        return redirect(url_for("settings_page", tab="backup"))
     backup_path = BACKUP_IMPORT_PATH / f"{token}.zip"
     if not backup_path.exists():
         set_notice("Die hochgeladene Backup-Datei ist nicht mehr vorhanden.")
-        return redirect(url_for("settings_page", _anchor="backup"))
+        return redirect(url_for("settings_page", tab="backup"))
     restore_config = request.form.get("restore_config") == "true"
     restore_state = request.form.get("restore_state") == "true"
     restore_pdfs = request.form.get("restore_pdfs") == "true"
     if not (restore_config or restore_state or restore_pdfs):
         set_notice("Bitte mindestens einen Bereich für die Wiederherstellung auswählen.")
-        return redirect(url_for("settings_page", _anchor="backup"))
+        return redirect(url_for("settings_page", tab="backup"))
     try:
         restored = restore_backup_file(backup_path, restore_config, restore_state, restore_pdfs)
     except Exception as exc:
         set_notice(f"Backup konnte nicht wiederhergestellt werden: {exc}")
-        return redirect(url_for("settings_page", _anchor="backup"))
+        return redirect(url_for("settings_page", tab="backup"))
     backup_path.unlink(missing_ok=True)
     with state_lock:
         state = load_state()
@@ -5169,7 +5192,7 @@ def confirm_backup_import() -> Response:
             + "Nutze Settings > Abfragen, um Anbieter gezielt neu zu prüfen."
         )
         save_state(state)
-    return redirect(url_for("settings_page", _anchor="backup"))
+    return redirect(url_for("settings_page", tab="backup"))
 
 
 def product_by_id_with_state(config: Dict[str, Any], product_id: str) -> Optional[Dict[str, Any]]:
@@ -5186,10 +5209,10 @@ def product_mqtt_action(product_id: str, action: str) -> Response:
         if return_target == "dialog":
             return redirect(url_for("index", mqtt_product=product_id, _anchor=dialog_anchor))
         if return_target == "mqtt_settings":
-            return redirect(url_for("settings_page", mqtt_product=product_id, _anchor="mqtt"))
+            return redirect(url_for("settings_page", tab="mqtt", mqtt_product=product_id))
         referrer = request.referrer or ""
         if "/settings" in referrer:
-            return redirect(url_for("settings_page", mqtt_product=product_id, _anchor="mqtt"))
+            return redirect(url_for("settings_page", tab="mqtt", mqtt_product=product_id))
         return redirect(request.referrer or url_for("index"))
 
     if not product:
@@ -5241,10 +5264,10 @@ def upload_manual_pdf() -> Response:
     upload = request.files.get("pdf_file")
     if not upload or not getattr(upload, "filename", ""):
         set_notice("Keine PDF-Datei ausgewählt.")
-        return redirect(url_for("settings_page", _anchor="pdfs"))
+        return redirect(url_for("settings_page", tab="pdfs"))
     if not str(upload.filename).lower().endswith(".pdf"):
         set_notice("Bitte eine PDF-Datei hochladen.")
-        return redirect(url_for("settings_page", _anchor="pdfs"))
+        return redirect(url_for("settings_page", tab="pdfs"))
     try:
         name = manual_pdf_reader.save_upload(upload)
         refreshed = refresh_provider_products(load_config(), "manual_pdf")
@@ -5252,7 +5275,7 @@ def upload_manual_pdf() -> Response:
         set_notice(f"PDF hochgeladen: {name}{suffix}")
     except Exception as exc:
         set_notice(f"PDF konnte nicht hochgeladen werden: {exc}")
-    return redirect(url_for("settings_page", _anchor="pdfs"))
+    return redirect(url_for("settings_page", tab="pdfs"))
 
 
 @app.post("/manual-pdfs/<path:name>/delete")
@@ -5264,7 +5287,7 @@ def delete_manual_pdf(name: str) -> Response:
         set_notice(f"PDF gelöscht: {Path(name).name}{suffix}")
     except Exception as exc:
         set_notice(f"PDF konnte nicht gelöscht werden: {exc}")
-    return redirect(url_for("settings_page", _anchor="pdfs"))
+    return redirect(url_for("settings_page", tab="pdfs"))
 
 
 @app.get("/manual-pdfs/file/<path:name>")

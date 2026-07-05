@@ -80,6 +80,15 @@ def cents(value: Optional[float]) -> Optional[int]:
     return int(round(value * 100))
 
 
+def float_value(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
 def number(pattern: str, text: str) -> Optional[float]:
     match = re.search(pattern, text)
     return float(match.group(1)) if match else None
@@ -176,6 +185,7 @@ def read_mueller_product(product: Dict[str, str], _market: Dict[str, Any], _post
     offers = json_ld.get("offers") or []
     first_offer = offers[0] if isinstance(offers, list) and offers else {}
 
+    structured_price = float_value(first_offer.get("price"))
     current_price = number(
         r'"currentPrice":\{"currencyIso":"EUR","valueWithoutTax":[0-9.]+,"valueWithTax":([0-9.]+)',
         chunk,
@@ -184,8 +194,8 @@ def read_mueller_product(product: Dict[str, str], _market: Dict[str, Any], _post
         r'"recommendedRetailPrice":\{"currencyIso":"EUR","valueWithoutTax":[0-9.]+,"valueWithTax":([0-9.]+)',
         chunk,
     )
-    if current_price is None and first_offer.get("price") is not None:
-        current_price = float(first_offer["price"])
+    if structured_price is not None:
+        current_price = structured_price
 
     if current_price is None:
         raise RuntimeError(f"Kein Mueller-Preis fuer {url} gefunden.")
