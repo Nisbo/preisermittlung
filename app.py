@@ -52,7 +52,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.22-dev"
+APP_VERSION = "0.1.23-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -2814,14 +2814,47 @@ def mqtt_publish_for_product(config: Dict[str, Any], product: Dict[str, Any], ac
     settings = config.get("settings") or {}
     if action == "discovery":
         mqtt_publish(payloads["discovery_topic"], payloads["discovery_payload"], settings, retain=True)
+        remember_mqtt_product(product)
         return f"MQTT Discovery gesendet: {product.get('id')}"
     if action == "state":
         mqtt_publish(payloads["state_topic"], payloads["state_payload"], settings, retain=True)
+        remember_mqtt_product(product)
         return f"MQTT Status gesendet: {product.get('id')}"
     if action == "delete":
         mqtt_publish(payloads["delete_topic"], "", settings, retain=True)
+        forget_mqtt_product(str(product.get("id") or ""))
         return f"MQTT Discovery gelöscht: {product.get('id')}"
     raise ValueError("Unbekannte MQTT-Aktion.")
+
+
+def remember_mqtt_product(product: Dict[str, Any]) -> None:
+    product_id = str(product.get("id") or "").strip()
+    if not product_id:
+        return
+    with state_lock:
+        state = load_state()
+        known = state.setdefault("mqtt_known_products", {})
+        known[product_id] = {
+            "id": product_id,
+            "name": str(product.get("name") or product.get("title") or product_id),
+            "last_seen_at": now_iso(),
+        }
+        save_state(state)
+
+
+def forget_mqtt_product(product_id: str) -> None:
+    product_id = str(product_id or "").strip()
+    if not product_id:
+        return
+    with state_lock:
+        state = load_state()
+        known = state.get("mqtt_known_products") or {}
+        known.pop(product_id, None)
+        if known:
+            state["mqtt_known_products"] = known
+        else:
+            state.pop("mqtt_known_products", None)
+        save_state(state)
 
 
 def product_with_current_state(product: Dict[str, Any]) -> Dict[str, Any]:
@@ -4892,6 +4925,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         1 for product in config.get("products") or [] if product_enabled(product) and not product_mqtt_updates_enabled(product)
     )
     mqtt_product_disabled_count = sum(1 for product in config.get("products") or [] if not product_enabled(product))
+    mqtt_known_count = len(state.get("mqtt_known_products") or {})
     api_enabled = get_api_enabled(config)
     id_display_mode = product_id_display_mode(config)
     extra_matches_mode = pdf_extra_matches_display_mode(config)
@@ -5335,63 +5369,51 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     <section class="panel" data-settings-panel="mqtt" {'hidden' if active_settings_tab != 'mqtt' else ''}>
       <h2>MQTT</h2>
       <form method="post" action="/settings">
-        <div class="settings-grid">
-          <div class="settings-card">
-          <label class="toggle-line"><input type="checkbox" name="mqtt_enabled" value="true" {'checked' if mqtt_enabled else ''}> MQTT aktiv</label>
-          <div class="small">Der Client verbindet sich nur, wenn MQTT aktiv ist.</div>
-          </div>
-          <div class="settings-card">
-          <label class="toggle-line"><input type="checkbox" name="mqtt_auto_updates_enabled" value="true" {'checked' if mqtt_auto_enabled else ''}> MQTT Auto Updates aktiv</label>
-          <div class="small">Wenn ausgeschaltet, senden manuelle/automatische Aktualisierungen und Artikeländerungen keine MQTT-Updates. Manuelle MQTT-Buttons und Löschen bleiben möglich.</div>
-          </div>
-          <div class="settings-card">
-          <label class="toggle-line"><input type="checkbox" name="mqtt_new_products_enabled" value="true" {'checked' if mqtt_new_default_enabled else ''}> Neue Artikel: MQTT Updates standardmäßig aktiv</label>
-          <div class="small">Legt nur den Standardwert für neu angelegte Artikel fest. Bestehende Artikel werden nicht geändert.</div>
-          </div>
-          <div class="settings-card">
-            <h3>MQTT Artikel</h3>
-            <div class="metric-grid" style="margin-top: 10px">
-              <div class="metric"><span>Aktiv</span><strong>{escape(str(mqtt_enabled_count))}</strong></div>
-              <div class="metric"><span>MQTT aus</span><strong>{escape(str(mqtt_disabled_count))}</strong></div>
-              <div class="metric"><span>Artikel inaktiv</span><strong>{escape(str(mqtt_product_disabled_count))}</strong></div>
+        <div class="settings-card settings-card-full">
+          <h3>Client</h3>
+          <div class="settings-grid align-start" style="margin-top: 10px">
+            <div>
+              <label class="toggle-line"><input type="checkbox" name="mqtt_enabled" value="true" {'checked' if mqtt_enabled else ''}> MQTT aktiv</label>
+              <div class="small">Der Client verbindet sich nur, wenn MQTT aktiv ist.</div>
+            </div>
+            <div class="field">
+              <label>Clientname</label>
+              <input name="mqtt_client_id" value="{escape(mqtt_client_id)}">
+            </div>
+            <div class="field">
+              <label>Broker-URL</label>
+              <input name="mqtt_broker_url" value="{escape(settings_value(config, 'mqtt_broker_url', ''))}" placeholder="mqtt://homeassistant.local">
+              <div class="small">Erlaubt: mqtt:// oder tcp:// ohne TLS, mqtts://, ssl:// oder tls:// mit TLS.</div>
+            </div>
+            <div class="field">
+              <label>Port</label>
+              <input name="mqtt_port" inputmode="numeric" value="{escape(settings_value(config, 'mqtt_port', '1883'))}">
+            </div>
+            <div class="field">
+              <label>Username optional</label>
+              <input name="mqtt_username" value="{escape(settings_value(config, 'mqtt_username', ''))}">
+            </div>
+            <div class="field">
+              <label>Password optional</label>
+              <input type="password" name="mqtt_password" value="{escape(settings_value(config, 'mqtt_password', ''))}">
+            </div>
+            <div class="field">
+              <label>Keepalive in Sekunden</label>
+              <input name="mqtt_keepalive" inputmode="numeric" value="{escape(settings_value(config, 'mqtt_keepalive', '60'))}">
             </div>
           </div>
-          <div class="settings-card">
-          <div class="field">
-            <label>Clientname</label>
-            <input name="mqtt_client_id" value="{escape(mqtt_client_id)}">
-          </div>
-          </div>
-          <div class="settings-card settings-card-full">
-          <div class="settings-grid align-start">
-          <div class="field">
-            <label>Broker-URL</label>
-            <input name="mqtt_broker_url" value="{escape(settings_value(config, 'mqtt_broker_url', ''))}" placeholder="mqtt://homeassistant.local">
-            <div class="small">Erlaubt: mqtt:// oder tcp:// ohne TLS, mqtts://, ssl:// oder tls:// mit TLS.</div>
-          </div>
-          <div class="field">
-            <label>Port</label>
-            <input name="mqtt_port" inputmode="numeric" value="{escape(settings_value(config, 'mqtt_port', '1883'))}">
-          </div>
-          </div>
-          </div>
-          <div class="settings-card">
-          <div class="field">
-            <label>Username optional</label>
-            <input name="mqtt_username" value="{escape(settings_value(config, 'mqtt_username', ''))}">
-          </div>
-          </div>
-          <div class="settings-card">
-          <div class="field">
-            <label>Password optional</label>
-            <input type="password" name="mqtt_password" value="{escape(settings_value(config, 'mqtt_password', ''))}">
-          </div>
-          </div>
-          <div class="settings-card">
-          <div class="field">
-            <label>Keepalive in Sekunden</label>
-            <input name="mqtt_keepalive" inputmode="numeric" value="{escape(settings_value(config, 'mqtt_keepalive', '60'))}">
-          </div>
+        </div>
+        <div class="settings-card settings-card-full" style="margin-top: 12px">
+          <h3>Auto Updates</h3>
+          <div class="settings-grid align-start" style="margin-top: 10px">
+            <div>
+              <label class="toggle-line"><input type="checkbox" name="mqtt_auto_updates_enabled" value="true" {'checked' if mqtt_auto_enabled else ''}> MQTT Auto Updates aktiv</label>
+              <div class="small">Wenn ausgeschaltet, senden manuelle/automatische Aktualisierungen und Artikeländerungen keine MQTT-Updates. Manuelle MQTT-Buttons und Löschen bleiben möglich.</div>
+            </div>
+            <div>
+              <label class="toggle-line"><input type="checkbox" name="mqtt_new_products_enabled" value="true" {'checked' if mqtt_new_default_enabled else ''}> Neue Artikel: MQTT Updates standardmäßig aktiv</label>
+              <div class="small">Legt nur den Standardwert für neu angelegte Artikel fest. Bestehende Artikel werden nicht geändert.</div>
+            </div>
           </div>
         </div>
         <input type="hidden" name="refresh_delay_seconds" value="{escape(settings_value(config, 'refresh_delay_seconds', '5'))}">
@@ -5407,6 +5429,42 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         <h3>Home Assistant Discovery Testarea</h3>
         <div class="small">Hier siehst du den MQTT-Aufbau für genau einen Artikel. Gesendet wird nur über die Buttons.</div>
         <div class="notice" style="margin-top: 10px" data-mqtt-test-status {'hidden' if not mqtt_test_notice_html else ''}>{escape(str((mqtt_test_notice or {}).get("message") or ""))}</div>
+        <div class="settings-grid align-start" style="margin-top: 12px">
+          <div class="soft-panel">
+            <h3>MQTT Artikel</h3>
+            <div class="metric-grid" style="margin-top: 10px">
+              <div class="metric"><span>Aktiv</span><strong>{escape(str(mqtt_enabled_count))}</strong></div>
+              <div class="metric"><span>MQTT aus</span><strong>{escape(str(mqtt_disabled_count))}</strong></div>
+              <div class="metric"><span>Artikel inaktiv</span><strong>{escape(str(mqtt_product_disabled_count))}</strong></div>
+              <div class="metric"><span>Bekannt in MQTT</span><strong>{escape(str(mqtt_known_count))}</strong></div>
+            </div>
+          </div>
+          <div class="soft-panel">
+            <h3>Alle aktiven MQTT-Artikel</h3>
+            <div class="small">Diese Buttons senden nur für aktive Artikel mit „MQTT Updates aktiv“. Die globale Auto-Update-Sperre wird hier bewusst ignoriert.</div>
+            <div class="actions" style="margin-top: 10px">
+              <form method="post" action="/settings/mqtt/batch/discovery" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button type="submit">{icon('settings')} Discovery für alle senden</button></form>
+              <form method="post" action="/settings/mqtt/batch/state" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button type="submit">{icon('refresh')} Status für alle senden</button></form>
+              <form method="post" action="/settings/mqtt/batch/both" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button class="primary" type="submit">{icon('upload')} Discovery + Status für alle senden</button></form>
+            </div>
+          </div>
+          <div class="soft-panel">
+            <h3>Massenänderung</h3>
+            <div class="small">Setzt „MQTT Updates aktiv“ bei vielen Artikeln auf einmal. Standardmäßig werden deaktivierte Artikel nicht verändert.</div>
+            <label class="toggle-line" style="margin-top: 10px"><input type="checkbox" name="include_disabled" value="true" form="mqtt-bulk-enable"> Auch auf deaktivierte Artikel anwenden</label>
+            <div class="actions" style="margin-top: 10px">
+              <form id="mqtt-bulk-enable" method="post" action="/settings/mqtt/products/updates/enable" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button type="submit">{icon('plus')} MQTT Updates aktiv auf ein</button></form>
+              <form method="post" action="/settings/mqtt/products/updates/disable" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><input type="hidden" name="include_disabled" value="false" data-mqtt-bulk-include-copy><button type="submit">{icon('trash')} MQTT Updates aktiv auf aus</button></form>
+            </div>
+          </div>
+          <div class="soft-panel">
+            <h3>Home Assistant aufräumen</h3>
+            <div class="small">Löscht die Discovery aller aktuell bekannten MQTT-Artikel aus Home Assistant. Bereits vor diesem Update gelöschte Artikel können nur entfernt werden, wenn ihre MQTT-ID der App noch bekannt ist.</div>
+            <div class="actions" style="margin-top: 10px">
+              <button class="danger" type="button" data-dialog-open="mqtt-delete-all-dialog">{icon('trash')} Alle aus HA löschen</button>
+            </div>
+          </div>
+        </div>
         <form class="settings-grid align-start" method="get" action="/settings" style="margin-top: 10px" data-no-scroll="true">
           <input type="hidden" name="tab" value="mqtt">
           <div class="field">
@@ -5423,15 +5481,6 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           <form method="post" action="/products/{escape(str(selected_mqtt_product_id))}/mqtt/state?return=json" data-mqtt-action-form="state" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button type="submit">{icon('refresh')} Status senden</button></form>
           <form method="post" action="/products/{escape(str(selected_mqtt_product_id))}/mqtt/delete?return=json" data-mqtt-action-form="delete" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button class="danger" type="submit">{icon('trash')} Aus HA löschen</button></form>
         </div>
-        <div class="soft-panel" style="margin-top: 12px">
-          <h4>Alle aktiven MQTT-Artikel</h4>
-          <div class="small">Diese Buttons senden nur für aktive Artikel mit „MQTT Updates aktiv“. Die globale Auto-Update-Sperre wird hier bewusst ignoriert.</div>
-          <div class="actions" style="margin-top: 10px">
-            <form method="post" action="/settings/mqtt/batch/discovery" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button type="submit">{icon('settings')} Discovery für alle senden</button></form>
-            <form method="post" action="/settings/mqtt/batch/state" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button type="submit">{icon('refresh')} Status für alle senden</button></form>
-            <form method="post" action="/settings/mqtt/batch/both" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button class="primary" type="submit">{icon('upload')} Discovery + Status für alle senden</button></form>
-          </div>
-        </div>
         <div class="settings-grid align-start" style="margin-top: 12px">
           <div class="field">
             <label>Discovery Config</label>
@@ -5446,6 +5495,21 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             <textarea class="code-preview" data-mqtt-preview="delete" readonly>{escape(mqtt_preview_delete)}</textarea>
           </div>
         </div>
+      </div>
+      <div class="dialog-backdrop" id="mqtt-delete-all-dialog">
+        <section class="dialog">
+          <div class="dialog-head">
+            <div><h2>Alle MQTT-Entities aus HA löschen?</h2><div class="small">Home Assistant Discovery</div></div>
+            <button class="dialog-close" type="button" data-dialog-close aria-label="Schließen">×</button>
+          </div>
+          <div class="small">Es werden die Discovery-Einträge aller aktuell bekannten MQTT-Artikel gelöscht. Das entfernt die Sensoren aus Home Assistant, sobald Home Assistant die leeren retained Discovery-Nachrichten verarbeitet.</div>
+          <form method="post" action="/settings/mqtt/delete-all" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true" data-close-dialog-on-success="true">
+            <div class="actions" style="margin-top: 12px">
+              <button class="danger" type="submit">{icon('trash')} Aus HA löschen</button>
+              <button class="button" type="button" data-dialog-close>Abbrechen</button>
+            </div>
+          </form>
+        </section>
       </div>
     </section>
     <section class="panel" data-settings-panel="backup" {'hidden' if active_settings_tab != 'backup' else ''}>
@@ -5799,6 +5863,14 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         updateMqttPreview(select.value);
       }});
     }});
+    const syncMqttBulkInclude = () => {{
+      const checked = !!document.querySelector('input[name="include_disabled"][form="mqtt-bulk-enable"]')?.checked;
+      document.querySelectorAll('[data-mqtt-bulk-include-copy]').forEach((input) => {{
+        input.value = checked ? 'true' : 'false';
+      }});
+    }};
+    document.querySelector('input[name="include_disabled"][form="mqtt-bulk-enable"]')?.addEventListener('change', syncMqttBulkInclude);
+    syncMqttBulkInclude();
     document.querySelectorAll('[data-ajax-form]').forEach((form) => {{
       form.addEventListener('submit', (event) => {{
         event.preventDefault();
@@ -5817,6 +5889,11 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           .then((response) => response.json())
           .then((data) => {{
             if (status) status.textContent = data.message || (data.ok ? 'MQTT-Aktion ausgeführt.' : 'MQTT-Aktion fehlgeschlagen.');
+            if (data.ok && form.dataset.closeDialogOnSuccess === 'true') {{
+              const dialog = form.closest('.dialog-backdrop');
+              dialog?.classList.remove('is-open');
+              if (dialog) dialog.style.display = 'none';
+            }}
           }})
           .catch((error) => {{
             if (status) status.textContent = 'MQTT-Aktion fehlgeschlagen: ' + error;
@@ -6042,6 +6119,63 @@ def mqtt_batch_action(action: str) -> Response:
             message += f"; {len(errors) - 3} weitere"
         return jsonify({"ok": False, "message": message})
     return jsonify({"ok": True, "message": f"MQTT {label} für {sent} Artikel gesendet."})
+
+
+@app.post("/settings/mqtt/products/updates/<action>")
+def mqtt_bulk_product_updates(action: str) -> Response:
+    if action not in {"enable", "disable"}:
+        return jsonify({"ok": False, "message": "Unbekannte MQTT-Massenaktion."}), 400
+    config = load_config()
+    include_disabled = request.form.get("include_disabled") == "true"
+    changed = 0
+    for product in config.get("products") or []:
+        if not include_disabled and not product_enabled(product):
+            continue
+        before = product_mqtt_updates_enabled(product)
+        if action == "enable":
+            product.pop("mqtt_updates_enabled", None)
+            after = True
+        else:
+            product["mqtt_updates_enabled"] = "false"
+            after = False
+        if before != after:
+            changed += 1
+    save_config(config)
+    label = "aktiviert" if action == "enable" else "deaktiviert"
+    suffix = " inklusive deaktivierter Artikel" if include_disabled else ""
+    return jsonify({"ok": True, "message": f"MQTT Updates bei {changed} Artikel(n) {label}{suffix}."})
+
+
+@app.post("/settings/mqtt/delete-all")
+def mqtt_delete_all_from_ha() -> Response:
+    config = load_config()
+    settings = config.get("settings") or {}
+    if str(settings.get("mqtt_enabled", "false")).strip().lower() not in {"1", "true", "yes", "on"}:
+        return jsonify({"ok": False, "message": "MQTT ist deaktiviert."}), 400
+    with state_lock:
+        state = load_state()
+        known_ids = set((state.get("mqtt_known_products") or {}).keys())
+    products_by_id = {str(product.get("id")): product for product in config.get("products") or [] if product.get("id")}
+    all_ids = sorted(set(products_by_id) | {str(product_id) for product_id in known_ids if product_id})
+    deleted = 0
+    errors = []
+    for product_id in all_ids:
+        try:
+            product = products_by_id.get(product_id)
+            if product:
+                mqtt_publish_for_product(config, product_with_current_state(product), "delete")
+            else:
+                mqtt_publish(mqtt_discovery_topic({"id": product_id}), "", settings, retain=True)
+                forget_mqtt_product(product_id)
+            deleted += 1
+        except Exception as exc:
+            errors.append(f"{product_id}: {exc}")
+    if errors:
+        message = f"MQTT Discovery für {deleted}/{len(all_ids)} bekannte Artikel gelöscht. Fehler: " + "; ".join(errors[:3])
+        if len(errors) > 3:
+            message += f"; {len(errors) - 3} weitere"
+        return jsonify({"ok": False, "message": message})
+    return jsonify({"ok": True, "message": f"MQTT Discovery für {deleted} bekannte Artikel gelöscht."})
 
 
 @app.post("/settings/mqtt/test")
