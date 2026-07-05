@@ -155,13 +155,27 @@ def current_pdf_url() -> str:
     return aez_links[0] if aez_links else absolute[0]
 
 
+def canonical_pdf_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    return urllib.parse.urlunparse(parsed._replace(fragment=""))
+
+
+def pdf_url_from_product(product: Dict[str, Any]) -> Optional[str]:
+    for key in ("url", "pdf_url"):
+        value = str(product.get(key) or "").strip()
+        if ".pdf" in urllib.parse.urlparse(value).path.lower():
+            return canonical_pdf_url(value)
+    return None
+
+
 def cached_pdf_path(url: str) -> Path:
     PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(canonical_pdf_url(url).encode("utf-8")).hexdigest()[:12]
     return PDF_CACHE_DIR.joinpath(f"{digest}.pdf")
 
 
 def download_pdf(url: str) -> Path:
+    url = canonical_pdf_url(url)
     path = cached_pdf_path(url)
     if path.exists() and path.stat().st_size > 0:
         return path
@@ -482,15 +496,20 @@ def parse_pdf_context(pdf_url: str, pdf_path: Path, loaded_at: Optional[float] =
 
 
 def current_pdf_context() -> Dict[str, Any]:
+    return pdf_context_for_url(current_pdf_url())
+
+
+def pdf_context_for_url(pdf_url: str) -> Dict[str, Any]:
     now = time.time()
-    cached = PDF_CONTEXT_CACHE.get("context")
+    pdf_url = canonical_pdf_url(pdf_url)
+    cache_key = f"context:{pdf_url}"
+    cached = PDF_CONTEXT_CACHE.get(cache_key)
     if cached and now - float(cached.get("loaded_at") or 0) < PDF_CONTEXT_TTL_SECONDS:
         return cached
 
-    pdf_url = current_pdf_url()
     pdf_path = download_pdf(pdf_url)
     context = parse_pdf_context(pdf_url, pdf_path, now)
-    PDF_CONTEXT_CACHE["context"] = context
+    PDF_CONTEXT_CACHE[cache_key] = context
     return context
 
 
@@ -611,4 +630,13 @@ def read_pdf_product_from_context(
 
 
 def read_aez_pdf_product(product: Dict[str, str], market: Dict[str, Any], postal_code: str) -> Dict[str, Any]:
-    return read_pdf_product_from_context(product, current_pdf_context())
+    context = current_pdf_context()
+    try:
+        return read_pdf_product_from_context(product, context)
+    except RuntimeError as exc:
+        fallback_url = pdf_url_from_product(product)
+        if not fallback_url or canonical_pdf_url(context.get("pdf_url", "")) == fallback_url:
+            raise
+        if "Kein Treffer im PDF-Prospekt" not in str(exc):
+            raise
+        return read_pdf_product_from_context(product, pdf_context_for_url(fallback_url))

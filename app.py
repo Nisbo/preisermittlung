@@ -51,7 +51,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.13-dev"
+APP_VERSION = "0.1.14-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -773,6 +773,11 @@ body[data-theme="dark"] .visual-price-map {
   border-radius: 8px;
   padding: 12px;
   margin-bottom: 12px;
+}
+.notice.success {
+  background: color-mix(in srgb, var(--ok) 12%, var(--panel));
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+  color: var(--ok);
 }
 .busy-overlay {
   position: fixed;
@@ -2713,12 +2718,16 @@ def refresh_worker(
             with state_lock:
                 progress["current_product_id"] = product["id"]
                 progress["current_product_name"] = product.get("name") or product["article_number"]
+                product_state = (load_state().get("products") or {}).get(product["id"], {})
 
             try:
+                product_for_reader = {**product_state, **product}
+                if product_provider(config, product) in {"aez_pdf", "manual_pdf"} and product_state.get("url"):
+                    product_for_reader["url"] = product_state.get("url")
                 product_store = market_for_product(config, product)
                 provider = product_provider(config, product)
                 market = resolve_market(provider, product_store)
-                result = read_product(provider, product, market, product_store["postal_code"])
+                result = read_product(provider, product_for_reader, market, product_store["postal_code"])
                 update_state_for_product(product, result, None)
             except Exception as exc:
                 update_state_for_product(product, None, str(exc))
@@ -4898,7 +4907,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         if (active) {{
           setUpdateNotice('Serverupdate läuft. Die App kann während des Neustarts kurz nicht erreichbar sein.');
         }} else if (status.log && status.log.includes('Exit-Code: 0')) {{
-          setUpdateNotice('Serverupdate abgeschlossen.');
+          setUpdateNotice('Serverupdate abgeschlossen.', 'success');
         }} else if (status.result && status.result !== 'success') {{
           setUpdateNotice(`Serverupdate beendet mit Status: ${{status.result}}`, 'error');
         }}
