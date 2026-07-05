@@ -52,7 +52,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.20-dev"
+APP_VERSION = "0.1.21-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -3815,7 +3815,12 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         f'<div class="small">{escape(str(hit_analysis.get("url") or "HIT Sortiment"))}</div></div>'
         '<a class="button dialog-close" href="/?add_product=1" aria-label="Schließen">×</a>'
         '</div>'
-        '<div class="small">Die HIT-Seite enthält mehrere Artikel. Wähle den Artikel aus, den du überwachen möchtest.</div>'
+        '<div class="small">'
+        'Die HIT-Seite enthält mehrere Artikel. Aktuell werden nur die ersten 40 Artikel angezeigt. '
+        'Wähle den Artikel aus, den du überwachen möchtest.<br>'
+        'Tipp: Wenn HIT auf der Webseite einen Artikel nur als Popup öffnet, kannst du ihn per Rechtsklick '
+        'in einem neuen Tab oder Fenster öffnen, um die direkte Artikel-URL zu bekommen.'
+        '</div>'
         + (
             f'<div class="market-list" style="margin-top: 12px">{"".join(hit_candidate_rows)}</div>'
             if hit_candidate_rows

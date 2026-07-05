@@ -171,6 +171,14 @@ def write_simple_yaml(config: Dict[str, Any], path: Path = CONFIG_PATH) -> None:
                 "market_match_2",
             ):
                 lines.append(f"    {key}: {quote_yaml(market.get(key))}")
+            for key in (
+                "hit_market_url",
+                "hit_search_postal_code",
+                "hit_use_app_price",
+                "distance_km",
+            ):
+                if key in market:
+                    lines.append(f"    {key}: {quote_yaml(market.get(key))}")
 
     categories = config.get("categories") or []
     if categories:
