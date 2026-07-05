@@ -52,7 +52,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.21-dev"
+APP_VERSION = "0.1.22-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -2444,6 +2444,21 @@ def product_enabled(product: Dict[str, Any]) -> bool:
     return raw not in {"0", "false", "no", "off", "nein"}
 
 
+def mqtt_auto_updates_enabled(config: Dict[str, Any]) -> bool:
+    raw = settings_value(config, "mqtt_auto_updates_enabled", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "nein"}
+
+
+def mqtt_new_products_enabled(config: Dict[str, Any]) -> bool:
+    raw = settings_value(config, "mqtt_new_products_enabled", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off", "nein"}
+
+
+def product_mqtt_updates_enabled(product: Dict[str, Any]) -> bool:
+    raw = str(product.get("mqtt_updates_enabled", "true")).strip().lower()
+    return raw not in {"0", "false", "no", "off", "nein"}
+
+
 def default_mqtt_client_id() -> str:
     host = re.sub(r"[^a-zA-Z0-9_-]+", "-", socket.gethostname()).strip("-").lower()
     return f"preisermittlung-{host or 'server'}"
@@ -2498,6 +2513,12 @@ def save_settings_from_form(config: Dict[str, Any]) -> Dict[str, Any]:
         )
     if "mqtt_client_id" in request.form:
         settings["mqtt_enabled"] = "true" if request.form.get("mqtt_enabled") == "true" else "false"
+        settings["mqtt_auto_updates_enabled"] = (
+            "true" if request.form.get("mqtt_auto_updates_enabled") == "true" else "false"
+        )
+        settings["mqtt_new_products_enabled"] = (
+            "true" if request.form.get("mqtt_new_products_enabled") == "true" else "false"
+        )
         settings["mqtt_client_id"] = request.form.get("mqtt_client_id", "").strip() or default_mqtt_client_id()
         settings["mqtt_broker_url"] = request.form.get("mqtt_broker_url", "").strip()
         settings["mqtt_port"] = request.form.get("mqtt_port", "").strip() or "1883"
@@ -2711,6 +2732,7 @@ def mqtt_state_payload(config: Dict[str, Any], product: Dict[str, Any]) -> Dict[
         "unit_price": item_state.get("unit_price_text") or item_state.get("unit_price"),
         "available": status == "ok",
         "enabled": product_enabled(product),
+        "mqtt_updates_enabled": product_mqtt_updates_enabled(product),
         "status": status,
         "error": item_state.get("last_error"),
         "url": item_state.get("url") or product.get("product_url"),
@@ -2800,6 +2822,49 @@ def mqtt_publish_for_product(config: Dict[str, Any], product: Dict[str, Any], ac
         mqtt_publish(payloads["delete_topic"], "", settings, retain=True)
         return f"MQTT Discovery gelöscht: {product.get('id')}"
     raise ValueError("Unbekannte MQTT-Aktion.")
+
+
+def product_with_current_state(product: Dict[str, Any]) -> Dict[str, Any]:
+    with state_lock:
+        state = load_state()
+        item_state = dict((state.get("products") or {}).get(str(product.get("id")), {}))
+    return {**product, "state": item_state}
+
+
+def mqtt_auto_publish_allowed(config: Dict[str, Any], product: Dict[str, Any]) -> bool:
+    settings = config.get("settings") or {}
+    mqtt_enabled = str(settings.get("mqtt_enabled", "false")).strip().lower() in {"1", "true", "yes", "on"}
+    return (
+        mqtt_enabled
+        and mqtt_auto_updates_enabled(config)
+        and product_enabled(product)
+        and product_mqtt_updates_enabled(product)
+    )
+
+
+def mqtt_publish_discovery_and_state(config: Dict[str, Any], product: Dict[str, Any]) -> None:
+    mqtt_publish_for_product(config, product, "discovery")
+    mqtt_publish_for_product(config, product, "state")
+
+
+def mqtt_auto_publish_for_product(config: Dict[str, Any], product: Dict[str, Any]) -> None:
+    if not mqtt_auto_publish_allowed(config, product):
+        return
+    try:
+        mqtt_publish_discovery_and_state(config, product_with_current_state(product))
+    except Exception as exc:
+        app.logger.warning("MQTT auto publish failed for %s: %s", product.get("id"), exc)
+
+
+def mqtt_delete_discovery_for_product(config: Dict[str, Any], product: Dict[str, Any]) -> None:
+    settings = config.get("settings") or {}
+    mqtt_enabled = str(settings.get("mqtt_enabled", "false")).strip().lower() in {"1", "true", "yes", "on"}
+    if not mqtt_enabled:
+        return
+    try:
+        mqtt_publish_for_product(config, product_with_current_state(product), "delete")
+    except Exception as exc:
+        app.logger.warning("MQTT delete discovery failed for %s: %s", product.get("id"), exc)
 
 
 def mqtt_status(config: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, str]:
@@ -3194,6 +3259,7 @@ def refresh_worker(
                 update_state_for_product(product, result, None)
             except Exception as exc:
                 update_state_for_product(product, None, str(exc))
+            mqtt_auto_publish_for_product(config, product)
 
             with state_lock:
                 progress["done"] = index + 1
@@ -3253,6 +3319,7 @@ def refresh_provider_products(config: Dict[str, Any], provider_id: str) -> int:
             update_state_for_product(product, result, None)
         except Exception as exc:
             update_state_for_product(product, None, str(exc))
+        mqtt_auto_publish_for_product(config, product)
         count += 1
     return count
 
@@ -4206,11 +4273,13 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '</div>'
             f'<label class="toggle-line" style="margin-top: 10px"><input type="checkbox" name="enabled" value="true" {"checked" if is_enabled else ""}> Artikel aktiv</label>'
             '<div class="small">Inaktive Artikel werden bei „Alle aktualisieren“ und beim Auto-Refresh übersprungen.</div>'
+            f'<label class="toggle-line" style="margin-top: 10px"><input type="checkbox" name="mqtt_updates_enabled" value="true" {"checked" if product_mqtt_updates_enabled(product) else ""}> MQTT Updates aktiv</label>'
+            '<div class="small">Wenn aktiv, sendet dieser Artikel bei manuellem und automatischem Aktualisieren sowie nach dem Speichern Discovery und Status. Manuelle MQTT-Buttons senden immer.</div>'
             '<div class="actions" style="margin-top: 12px"><button class="primary" type="submit">Speichern</button>'
             '<button class="button" type="button" data-dialog-close>Abbrechen</button></div></form>'
             '<div class="settings-card" style="margin-top: 12px">'
             '<h3>MQTT / Home Assistant</h3>'
-            '<div class="small">Manueller Test für diesen Artikel. Automatisch wird noch nichts beim Aktualisieren gesendet.</div>'
+            '<div class="small">Manueller Test für diesen Artikel. Diese Buttons ignorieren die Auto-Update-Einstellungen bewusst.</div>'
             f'{product_mqtt_notice_html}'
             '<div class="actions" style="margin-top: 10px">'
             f'<form method="post" action="/products/{escape(product.get("id", ""))}/mqtt/discovery?return=dialog"><button type="submit">{icon("settings")} Discovery senden</button></form>'
@@ -4814,6 +4883,15 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     theme = current_theme(config)
     auto_enabled = get_auto_refresh_enabled(config)
     mqtt_enabled = str(settings.get("mqtt_enabled", "false")).lower() in {"1", "true", "yes", "on"}
+    mqtt_auto_enabled = mqtt_auto_updates_enabled(config)
+    mqtt_new_default_enabled = mqtt_new_products_enabled(config)
+    mqtt_enabled_count = sum(
+        1 for product in config.get("products") or [] if product_enabled(product) and product_mqtt_updates_enabled(product)
+    )
+    mqtt_disabled_count = sum(
+        1 for product in config.get("products") or [] if product_enabled(product) and not product_mqtt_updates_enabled(product)
+    )
+    mqtt_product_disabled_count = sum(1 for product in config.get("products") or [] if not product_enabled(product))
     api_enabled = get_api_enabled(config)
     id_display_mode = product_id_display_mode(config)
     extra_matches_mode = pdf_extra_matches_display_mode(config)
@@ -5263,6 +5341,22 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           <div class="small">Der Client verbindet sich nur, wenn MQTT aktiv ist.</div>
           </div>
           <div class="settings-card">
+          <label class="toggle-line"><input type="checkbox" name="mqtt_auto_updates_enabled" value="true" {'checked' if mqtt_auto_enabled else ''}> MQTT Auto Updates aktiv</label>
+          <div class="small">Wenn ausgeschaltet, senden manuelle/automatische Aktualisierungen und Artikeländerungen keine MQTT-Updates. Manuelle MQTT-Buttons und Löschen bleiben möglich.</div>
+          </div>
+          <div class="settings-card">
+          <label class="toggle-line"><input type="checkbox" name="mqtt_new_products_enabled" value="true" {'checked' if mqtt_new_default_enabled else ''}> Neue Artikel: MQTT Updates standardmäßig aktiv</label>
+          <div class="small">Legt nur den Standardwert für neu angelegte Artikel fest. Bestehende Artikel werden nicht geändert.</div>
+          </div>
+          <div class="settings-card">
+            <h3>MQTT Artikel</h3>
+            <div class="metric-grid" style="margin-top: 10px">
+              <div class="metric"><span>Aktiv</span><strong>{escape(str(mqtt_enabled_count))}</strong></div>
+              <div class="metric"><span>MQTT aus</span><strong>{escape(str(mqtt_disabled_count))}</strong></div>
+              <div class="metric"><span>Artikel inaktiv</span><strong>{escape(str(mqtt_product_disabled_count))}</strong></div>
+            </div>
+          </div>
+          <div class="settings-card">
           <div class="field">
             <label>Clientname</label>
             <input name="mqtt_client_id" value="{escape(mqtt_client_id)}">
@@ -5328,6 +5422,15 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           <form method="post" action="/products/{escape(str(selected_mqtt_product_id))}/mqtt/discovery?return=json" data-mqtt-action-form="discovery" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button type="submit">{icon('settings')} Discovery senden</button></form>
           <form method="post" action="/products/{escape(str(selected_mqtt_product_id))}/mqtt/state?return=json" data-mqtt-action-form="state" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button type="submit">{icon('refresh')} Status senden</button></form>
           <form method="post" action="/products/{escape(str(selected_mqtt_product_id))}/mqtt/delete?return=json" data-mqtt-action-form="delete" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button class="danger" type="submit">{icon('trash')} Aus HA löschen</button></form>
+        </div>
+        <div class="soft-panel" style="margin-top: 12px">
+          <h4>Alle aktiven MQTT-Artikel</h4>
+          <div class="small">Diese Buttons senden nur für aktive Artikel mit „MQTT Updates aktiv“. Die globale Auto-Update-Sperre wird hier bewusst ignoriert.</div>
+          <div class="actions" style="margin-top: 10px">
+            <form method="post" action="/settings/mqtt/batch/discovery" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button type="submit">{icon('settings')} Discovery für alle senden</button></form>
+            <form method="post" action="/settings/mqtt/batch/state" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button type="submit">{icon('refresh')} Status für alle senden</button></form>
+            <form method="post" action="/settings/mqtt/batch/both" data-ajax-form data-status-target="[data-mqtt-test-status]" data-no-scroll="true"><button class="primary" type="submit">{icon('upload')} Discovery + Status für alle senden</button></form>
+          </div>
         </div>
         <div class="settings-grid align-start" style="margin-top: 12px">
           <div class="field">
@@ -5899,6 +6002,48 @@ def mqtt_preview_api() -> Response:
     )
 
 
+@app.post("/settings/mqtt/batch/<action>")
+def mqtt_batch_action(action: str) -> Response:
+    config = load_config()
+    if action not in {"discovery", "state", "both"}:
+        return jsonify({"ok": False, "message": "Unbekannte MQTT-Aktion."}), 400
+    settings = config.get("settings") or {}
+    if str(settings.get("mqtt_enabled", "false")).strip().lower() not in {"1", "true", "yes", "on"}:
+        return jsonify({"ok": False, "message": "MQTT ist deaktiviert."}), 400
+
+    products = [
+        product
+        for product in config.get("products") or []
+        if product_enabled(product) and product_mqtt_updates_enabled(product)
+    ]
+    sent = 0
+    errors = []
+    for product in products:
+        try:
+            product_payload = product_with_current_state(product)
+            if action == "discovery":
+                mqtt_publish_for_product(config, product_payload, "discovery")
+            elif action == "state":
+                mqtt_publish_for_product(config, product_payload, "state")
+            else:
+                mqtt_publish_discovery_and_state(config, product_payload)
+            sent += 1
+        except Exception as exc:
+            errors.append(f"{product.get('id')}: {exc}")
+
+    label = {
+        "discovery": "Discovery",
+        "state": "Status",
+        "both": "Discovery + Status",
+    }[action]
+    if errors:
+        message = f"MQTT {label} für {sent}/{len(products)} Artikel gesendet. Fehler: " + "; ".join(errors[:3])
+        if len(errors) > 3:
+            message += f"; {len(errors) - 3} weitere"
+        return jsonify({"ok": False, "message": message})
+    return jsonify({"ok": True, "message": f"MQTT {label} für {sent} Artikel gesendet."})
+
+
 @app.post("/settings/mqtt/test")
 def test_mqtt() -> Response:
     config = load_config()
@@ -6287,6 +6432,8 @@ def delete_market(market_id: str) -> Response:
             product["market_id"] = target_market_id
     elif assigned_products:
         remove_ids = {product["id"] for product in assigned_products}
+        for product in assigned_products:
+            mqtt_delete_discovery_for_product(config, product)
         config["products"] = [product for product in config.get("products", []) if product.get("id") not in remove_ids]
         with state_lock:
             state = load_state()
@@ -6420,6 +6567,8 @@ def add_product() -> Response:
         "market_id": market_id,
         "product_url": normalize_product_url(provider, product_url, article_number),
     }
+    if not mqtt_new_products_enabled(config):
+        product["mqtt_updates_enabled"] = "false"
     products.append(product)
     save_config(config)
     if result:
@@ -6549,6 +6698,8 @@ def confirm_pdf_product() -> Response:
         "product_url": product_url,
         "search_term": search_term,
     }
+    if not mqtt_new_products_enabled(config):
+        product["mqtt_updates_enabled"] = "false"
     if auto_name:
         product["pdf_auto_name"] = "true"
     products.append(product)
@@ -6652,6 +6803,8 @@ def add_generic_product() -> Response:
         "generic_source": str(analysis.get("source") or "http"),
         "generic_initial_context": str(candidate.get("context") or ""),
     }
+    if not mqtt_new_products_enabled(config):
+        product["mqtt_updates_enabled"] = "false"
     products.append(product)
     save_config(config)
 
@@ -6684,6 +6837,9 @@ def add_generic_product() -> Response:
 @app.post("/products/<product_id>/delete")
 def delete_product(product_id: str) -> Response:
     config = load_config()
+    product = next((product for product in config.get("products", []) if product["id"] == product_id), None)
+    if product:
+        mqtt_delete_discovery_for_product(config, product)
     config["products"] = [product for product in config.get("products", []) if product["id"] != product_id]
     save_config(config)
     with state_lock:
@@ -6711,6 +6867,7 @@ def change_product_category(product_id: str) -> Response:
     target_price_raw = request.form.get("target_price", "").strip()
     target_price_cents = parse_price_cents(target_price_raw) if target_price_raw else None
     invalid_target_price = bool(target_price_raw and target_price_cents is None)
+    changed_product = None
     for product in config.get("products", []):
         if product.get("id") == product_id:
             product["category_id"] = category_id
@@ -6725,8 +6882,15 @@ def change_product_category(product_id: str) -> Response:
                 product.pop("enabled", None)
             else:
                 product["enabled"] = "false"
+            if request.form.get("mqtt_updates_enabled") == "true":
+                product.pop("mqtt_updates_enabled", None)
+            else:
+                product["mqtt_updates_enabled"] = "false"
+            changed_product = product
             break
     save_config(config)
+    if changed_product is not None:
+        mqtt_auto_publish_for_product(config, changed_product)
     if invalid_target_price:
         return redirect(url_for("index", category=category_id, _anchor=f"product-{product_id}"))
     return redirect(url_for("index", category=category_id, _anchor=f"product-{product_id}"))
@@ -6794,11 +6958,15 @@ def delete_category(category_id: str) -> Response:
         target_category_id = DEFAULT_CATEGORY_ID
 
     if delete_action == "delete_products":
+        deleted_products = [
+            product for product in config.get("products", []) if product_category_id(product) == category_id
+        ]
         deleted_ids = {
             str(product.get("id"))
-            for product in config.get("products", [])
-            if product_category_id(product) == category_id
+            for product in deleted_products
         }
+        for product in deleted_products:
+            mqtt_delete_discovery_for_product(config, product)
         config["products"] = [
             product for product in config.get("products", []) if product_category_id(product) != category_id
         ]

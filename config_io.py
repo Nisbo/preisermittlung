@@ -204,6 +204,8 @@ def write_simple_yaml(config: Dict[str, Any], path: Path = CONFIG_PATH) -> None:
             lines.append(f"    target_price_cents: {quote_yaml(product.get('target_price_cents'))}")
         if str(product.get("enabled", "true")).strip().lower() in {"0", "false", "no", "off", "nein"}:
             lines.append('    enabled: "false"')
+        if str(product.get("mqtt_updates_enabled", "true")).strip().lower() in {"0", "false", "no", "off", "nein"}:
+            lines.append('    mqtt_updates_enabled: "false"')
         if product.get("provider"):
             lines.append(f"    provider: {quote_yaml(product.get('provider'))}")
         if product.get("market_id"):
