@@ -51,7 +51,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.14-dev"
+APP_VERSION = "0.1.15-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -1057,6 +1057,12 @@ function withQueryParam(url, key, value) {
   target.searchParams.set(key, value);
   return target.pathname + target.search + target.hash;
 }
+function refreshRunMarker() {
+  return new URLSearchParams(window.location.search).get('refresh_started') || '1';
+}
+function refreshDoneMarker() {
+  return new URLSearchParams(window.location.search).get('done') || '';
+}
 function showBusyOverlay(message) {
   const textMessage = message || 'Vorgang läuft...';
   const overlay = document.querySelector('[data-busy-overlay]');
@@ -1108,8 +1114,9 @@ async function pollProgress() {
       text.textContent = `Fertig: ${done}/${total}`;
       window.setTimeout(() => {
         box.hidden = true;
-        const target = withQueryParam(window.location.href, 'done', '1');
-        if (!new URLSearchParams(window.location.search).has('done')) window.location = target;
+        const marker = refreshRunMarker();
+        const target = withQueryParam(window.location.href, 'done', marker);
+        if (refreshDoneMarker() !== marker) window.location = target;
       }, 700);
     }
   } catch (_) {
@@ -1552,10 +1559,20 @@ def local_url_with_query(value: str, key: str, query_value: str) -> str:
     return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
 
 
+def local_url_without_query(value: str, key: str) -> str:
+    parsed = urllib.parse.urlparse(value)
+    query = [(item_key, item_value) for item_key, item_value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True) if item_key != key]
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
 def local_url_with_fragment(value: str, fragment: str) -> str:
     parsed = urllib.parse.urlparse(value)
     clean_fragment = fragment.lstrip("#")
     return urllib.parse.urlunparse(parsed._replace(fragment=clean_fragment))
+
+
+def refresh_marker() -> str:
+    return str(int(time.time() * 1000))
 
 
 def add_seconds_iso(value: Optional[str], seconds: float) -> Optional[str]:
@@ -4788,7 +4805,12 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         document.querySelectorAll('[data-provider-refresh-status]').forEach((status) => {{
           if (currentProgress.running) {{
             status.hidden = false;
+            status.classList.remove('success');
             status.textContent = 'Es läuft bereits eine Aktualisierung.';
+          }} else if (!currentProgress.error && !box.hidden) {{
+            status.hidden = false;
+            status.classList.add('success');
+            status.textContent = 'Aktualisierung abgeschlossen.';
           }}
         }});
         const wasVisible = !box.hidden;
@@ -4880,6 +4902,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         target.hidden = false;
         target.classList.toggle('error', kind === 'error');
         target.classList.toggle('notice', kind !== 'error');
+        target.classList.toggle('success', kind === 'success');
         target.textContent = message;
       }});
     }}
@@ -5476,14 +5499,15 @@ def generated_file(filename: str) -> Response:
 @app.post("/refresh")
 def refresh_all() -> Response:
     start_refresh()
-    return redirect(url_for("index", refresh_started=1))
+    return redirect(url_for("index", refresh_started=refresh_marker()))
 
 
 @app.post("/products/<product_id>/refresh")
 def refresh_product(product_id: str) -> Response:
     start_refresh(product_id)
     target = safe_local_redirect_target(request.form.get("return_to", ""), url_for("index"))
-    target = local_url_with_query(target, "refresh_started", "1")
+    target = local_url_without_query(target, "done")
+    target = local_url_with_query(target, "refresh_started", refresh_marker())
     target = local_url_with_fragment(target, f"product-{product_id}")
     return redirect(target)
 
