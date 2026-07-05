@@ -51,7 +51,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.12-dev"
+APP_VERSION = "0.1.13-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -172,6 +172,16 @@ button.primary, a.button.primary { background: var(--accent-button); color: whit
 button.danger { color: #b00020; border-color: #efc2c8; }
 button.ghost { border-style: dashed; }
 button.icon-only, a.icon-only { width: 36px; padding: 0; }
+button.icon-only.is-refreshing {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+button.icon-only.is-refreshing svg {
+  animation: spin-refresh .9s linear infinite;
+}
+@keyframes spin-refresh {
+  to { transform: rotate(360deg); }
+}
 button.icon-small, a.icon-small {
   width: 30px;
   min-height: 30px;
@@ -1055,6 +1065,21 @@ function showBusyOverlay(message) {
     status.textContent = textMessage;
   });
 }
+function updateProductRefreshButtons(progress) {
+  const currentId = progress && progress.running ? String(progress.current_product_id || '') : '';
+  document.querySelectorAll('[data-product-refresh-button]').forEach((button) => {
+    const isCurrent = currentId && button.dataset.productRefreshButton === currentId;
+    button.classList.toggle('is-refreshing', !!isCurrent);
+    button.disabled = !!isCurrent;
+    if (isCurrent) {
+      button.setAttribute('aria-label', 'Aktualisierung läuft');
+      button.title = 'Aktualisierung läuft';
+    } else {
+      button.setAttribute('aria-label', 'Einzeln aktualisieren');
+      button.title = 'Einzeln aktualisieren';
+    }
+  });
+}
 async function pollProgress() {
   try {
     const response = await fetch('/api/progress', {cache: 'no-store'});
@@ -1068,6 +1093,7 @@ async function pollProgress() {
     const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
     const current = total ? Math.min(done + 1, total) : 0;
     bar.style.setProperty('--pct', pct + '%');
+    updateProductRefreshButtons(progress);
     if (progress.running) {
       refreshWasRunning = true;
       box.hidden = false;
@@ -1087,7 +1113,13 @@ async function pollProgress() {
 }
 pollProgress();
 if (new URLSearchParams(window.location.search).has('refresh_started')) {
-  window.scrollTo({top: 0, behavior: 'smooth'});
+  if (window.location.hash && window.location.hash.startsWith('#product-')) {
+    window.setTimeout(() => {
+      document.querySelector(window.location.hash)?.scrollIntoView({block: 'center', behavior: 'smooth'});
+    }, 120);
+  } else {
+    window.scrollTo({top: 0, behavior: 'smooth'});
+  }
 }
 
 function bindSortButtons(root = document) {
@@ -3587,7 +3619,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             f"<td data-label=\"Geändert\" data-sort-value=\"{escape(str(item_state.get('last_changed_at') or ''))}\"><span class=\"small\">{escape(format_datetime_de(item_state.get('last_changed_at')))}</span></td>"
             f"<td data-label=\"Status\" data-sort-value=\"{escape(status + ' ' + str(last_error or ''))}\" class=\"{'warn' if last_error or not is_enabled else 'ok'}\">{status_html}</td>"
             "<td data-label=\"Aktionen\"><div class=\"row-actions action-grid\">"
-            f"<form method=\"post\" action=\"/products/{escape(product.get('id', ''))}/refresh\"><input type=\"hidden\" name=\"return_to\" value=\"{escape(request.full_path)}\"><button class=\"icon-only\" title=\"Einzeln aktualisieren\" aria-label=\"Einzeln aktualisieren\">{icon('refresh')}</button></form>"
+            f"<form method=\"post\" action=\"/products/{escape(product.get('id', ''))}/refresh\"><input type=\"hidden\" name=\"return_to\" value=\"{escape(request.full_path)}\"><button class=\"icon-only\" data-product-refresh-button=\"{escape(product.get('id', ''))}\" title=\"Einzeln aktualisieren\" aria-label=\"Einzeln aktualisieren\">{icon('refresh')}</button></form>"
             f"<button class=\"icon-only\" type=\"button\" data-dialog-open=\"{escape(move_dialog_id)}\" title=\"Artikel bearbeiten\" aria-label=\"Artikel bearbeiten\">{icon('settings')}</button>"
             + (
                 f"<a class=\"button icon-only\" href=\"{escape(pdf_page_url(item_state.get('url'), item_state.get('pdf_page')) if provider_kind(provider) == 'prospect' else str(item_state.get('url')))}\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Öffnen\" aria-label=\"Öffnen\">{icon('shop')}</a>"
@@ -4153,7 +4185,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         update_start_class = "notice" if update_start_result.get("ok") else "error"
         update_start_output = str(update_start_result.get("output") or "").strip()
         update_start_html = (
-            f'<div class="{update_start_class}" style="margin-top: 12px">'
+            f'<div class="{update_start_class}" style="margin-top: 12px" data-update-start-message>'
             f'<strong>{escape(str(update_start_result.get("message") or "Update-Start"))}</strong>'
             f'{f"<pre><code>{escape(update_start_output)}</code></pre>" if update_start_output else ""}'
             '</div>'
@@ -4827,6 +4859,21 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     }});
 
     let updatePollAttempts = 0;
+    function setUpdateNotice(message, kind = 'notice') {{
+      const targets = [
+        ...document.querySelectorAll('[data-system-update-status]'),
+        ...document.querySelectorAll('[data-update-start-message]'),
+      ];
+      if (new URLSearchParams(window.location.search).get('tab') === 'updates') {{
+        targets.push(...document.querySelectorAll('[data-flash-notice]'));
+      }}
+      targets.forEach((target) => {{
+        target.hidden = false;
+        target.classList.toggle('error', kind === 'error');
+        target.classList.toggle('notice', kind !== 'error');
+        target.textContent = message;
+      }});
+    }}
     async function pollUpdateStatus() {{
       const logArea = document.querySelector('[data-update-log]');
       const stateNode = document.querySelector('[data-update-state]');
@@ -4848,6 +4895,13 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             button.textContent = 'Serverupdate starten';
           }}
         }});
+        if (active) {{
+          setUpdateNotice('Serverupdate läuft. Die App kann während des Neustarts kurz nicht erreichbar sein.');
+        }} else if (status.log && status.log.includes('Exit-Code: 0')) {{
+          setUpdateNotice('Serverupdate abgeschlossen.');
+        }} else if (status.result && status.result !== 'success') {{
+          setUpdateNotice(`Serverupdate beendet mit Status: ${{status.result}}`, 'error');
+        }}
         if (active || new URLSearchParams(window.location.search).get('tab') === 'updates') {{
           window.setTimeout(pollUpdateStatus, active ? 1200 : 5000);
         }}
