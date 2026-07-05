@@ -51,7 +51,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.15-dev"
+APP_VERSION = "0.1.16-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -4785,6 +4785,15 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     async function pollSettingsProgress() {{
       const box = document.querySelector('[data-settings-progress-box]');
       if (!box) return;
+      const setRefreshNotice = (message, kind = 'notice') => {{
+        document.querySelectorAll('[data-flash-notice], [data-provider-refresh-status]').forEach((notice) => {{
+          notice.hidden = false;
+          notice.classList.toggle('error', kind === 'error');
+          notice.classList.toggle('success', kind === 'success');
+          notice.classList.toggle('notice', kind !== 'error');
+          notice.textContent = message;
+        }});
+      }};
       try {{
         const response = await fetch('/api/progress', {{cache: 'no-store'}});
         const currentProgress = await response.json();
@@ -4802,17 +4811,13 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         document.querySelectorAll('[data-provider-refresh-form] button[type="submit"], [data-provider-refresh-form] input').forEach((element) => {{
           element.disabled = !!currentProgress.running;
         }});
-        document.querySelectorAll('[data-provider-refresh-status]').forEach((status) => {{
-          if (currentProgress.running) {{
-            status.hidden = false;
-            status.classList.remove('success');
-            status.textContent = 'Es läuft bereits eine Aktualisierung.';
-          }} else if (!currentProgress.error && !box.hidden) {{
-            status.hidden = false;
-            status.classList.add('success');
-            status.textContent = 'Aktualisierung abgeschlossen.';
-          }}
-        }});
+        if (currentProgress.running) {{
+          setRefreshNotice('Aktualisierung läuft...');
+        }} else if (currentProgress.error && !box.hidden) {{
+          setRefreshNotice(`Aktualisierung fehlgeschlagen: ${{currentProgress.error}}`, 'error');
+        }} else if (!currentProgress.error && !box.hidden) {{
+          setRefreshNotice('Aktualisierung abgeschlossen.', 'success');
+        }}
         const wasVisible = !box.hidden;
         box.hidden = !currentProgress.running && !currentProgress.error && !wasVisible;
         if (currentProgress.running) window.setTimeout(pollSettingsProgress, 900);
