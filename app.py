@@ -52,7 +52,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.19-dev"
+APP_VERSION = "0.1.20-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -882,6 +882,28 @@ body[data-theme="dark"] .visual-price-map {
   font-size: 12px;
 }
 .address-lines span { display: block; }
+.market-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 4px;
+}
+.market-meta span,
+.market-meta a,
+.market-meta button {
+  font-size: 12px;
+}
+.market-meta form {
+  margin: 0;
+}
+.market-meta button {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  text-decoration: underline;
+}
 .dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -3398,6 +3420,29 @@ def render_delete_market_dialog(
     )
 
 
+def render_toggle_hit_app_price_dialog(market: Optional[Dict[str, Any]]) -> str:
+    if not market:
+        return ""
+    current_enabled = str(market.get("hit_use_app_price") or "").lower() == "true"
+    next_enabled = not current_enabled
+    next_label = "aktivieren" if next_enabled else "deaktivieren"
+    return (
+        '<div class="error" style="margin-top: 14px">'
+        f'<strong>HIT App-Preis {escape(next_label)}?</strong><br>'
+        f'{market_address_html(market)}'
+        '<div class="small" style="margin-top: 8px">'
+        'Bereits gespeicherte HIT-Artikel werden dadurch nicht sofort neu gelesen. '
+        'Aktualisiere danach HIT über Settings &gt; Abfragen oder warte auf das nächste automatische Aktualisieren.'
+        '</div>'
+        f'<form method="post" action="/markets/{escape(str(market.get("market_id")))}/hit-app-price">'
+        f'<input type="hidden" name="enabled" value="{"true" if next_enabled else "false"}">'
+        '<div class="actions" style="margin-top: 10px">'
+        f'<button class="primary" type="submit">App-Preis {escape(next_label)}</button>'
+        '<a class="button" href="/?markets_dialog=1">Abbrechen</a>'
+        '</div></form></div>'
+    )
+
+
 def render_product_table(rows: List[str]) -> str:
     return (
         "<table>"
@@ -3538,9 +3583,11 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     show_add_pdf_dialog = request.args.get("add_pdf") == "1"
     delete_market_id = request.args.get("delete_market")
     delete_market_provider = request.args.get("provider") or None
+    toggle_hit_market_id = request.args.get("toggle_hit_app_price")
     edit_category_id = request.args.get("edit_category") or request.args.get("rename_category")
     delete_category_id = request.args.get("delete_category")
     delete_market_item = market_by_id(config, delete_market_id or "", delete_market_provider) if delete_market_id else None
+    toggle_hit_market_item = market_by_id(config, toggle_hit_market_id or "", "hit") if toggle_hit_market_id else None
     delete_market_products = [
         product
         for product in config.get("products", [])
@@ -4365,12 +4412,20 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         )
         market_flags = ""
         if provider == "hit":
-            hit_app_label = "HIT App-Preis aktiv" if str(market.get("hit_use_app_price") or "").lower() == "true" else "HIT App-Preis aus"
-            market_flags = f'<span>{escape(hit_app_label)}</span>'
+            hit_app_enabled = str(market.get("hit_use_app_price") or "").lower() == "true"
+            hit_app_label = "HIT App-Preis aktiv" if hit_app_enabled else "HIT App-Preis aus"
+            toggle_label = "ausschalten" if hit_app_enabled else "einschalten"
+            market_flags = (
+                f'<span>{escape(hit_app_label)}</span>'
+                f'<a href="/?markets_dialog=1&toggle_hit_app_price={escape(str(market.get("market_id")))}">App-Preis {escape(toggle_label)}</a>'
+            )
+        market_meta = (
+            f'<div class="market-meta"><span>Markt {escape(str(market.get("market_id")))}</span>{market_flags}</div>'
+        )
         market_rows.append(
             '<div class="market-row">'
             f'<div><strong>{escape(provider_label(provider))} - {escape(market.get("market_name") or "Markt")}</strong><br>'
-            f'<span class="small">{market_detail}<span>Markt {escape(str(market.get("market_id")))}</span>{market_flags}</span></div>'
+            f'<span class="small">{market_detail}</span>{market_meta}</div>'
             f'<a class="button danger icon-only" href="/?markets_dialog=1&delete_market={escape(str(market.get("market_id")))}&provider={escape(provider)}" title="Markt löschen" aria-label="Markt löschen">{icon("trash")}</a>'
             '</div>'
         )
@@ -4388,15 +4443,16 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             distance = str(market.get("distance_km") or "").strip()
             distance_text = f'<span>{escape(distance)} km entfernt</span>' if distance else ""
             hit_options = (
-                f'<span class="small">{distance_text}'
+                f'<div class="market-meta">{distance_text}'
                 '<label class="toggle-line inline-toggle">'
                 '<input type="checkbox" name="hit_use_app_price" value="true"> HIT App-Preis verwenden'
-                '</label></span>'
+                '</label></div>'
             )
+        search_meta = f'<div class="market-meta"><span>Markt {escape(str(market.get("market_id")))}</span></div>'
         search_rows.append(
             '<div class="market-row">'
             f'<div><strong>{escape(provider_label(provider))} - {escape(market.get("market_name") or "Markt")}</strong><br>'
-            f'<span class="small">{market_address_html(market)}<span>Markt {escape(str(market.get("market_id")))}</span></span>{hit_options}</div>'
+            f'<span class="small">{market_address_html(market)}</span>{search_meta}{hit_options}</div>'
             f'<form method="post" action="/markets">{hidden}<button>{icon("plus")} Speichern</button></form>'
             '</div>'
         )
@@ -4497,6 +4553,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
       </div>
       {('<div class="market-list">' + ''.join(market_rows) + '</div>') if market_rows else '<div class="small">Noch kein Markt gespeichert.</div>'}
       {render_delete_market_dialog(delete_market_item, delete_market_products, reassignment_options)}
+      {render_toggle_hit_app_price_dialog(toggle_hit_market_item)}
     </section>
   </div>
   <div class="dialog-backdrop"{' open' if show_categories_dialog else ''}>
@@ -6240,6 +6297,28 @@ def delete_market(market_id: str) -> Response:
     ]
     save_config(config)
     return redirect(url_for("index"))
+
+
+@app.post("/markets/<market_id>/hit-app-price")
+def toggle_hit_app_price(market_id: str) -> Response:
+    config = load_config()
+    enabled = request.form.get("enabled") == "true"
+    changed = False
+    for market in config.get("markets", []):
+        if str(market.get("market_id")) == str(market_id) and market_provider(market) == "hit":
+            market["hit_use_app_price"] = "true" if enabled else "false"
+            changed = True
+            break
+    if changed:
+        save_config(config)
+        set_notice(
+            "HIT App-Preis wurde "
+            + ("aktiviert" if enabled else "deaktiviert")
+            + ". Aktualisiere HIT über Settings > Abfragen oder warte auf das nächste automatische Aktualisieren."
+        )
+    else:
+        set_notice("HIT Markt wurde nicht gefunden.")
+    return redirect(url_for("index", markets_dialog=1))
 
 
 @app.post("/products")
