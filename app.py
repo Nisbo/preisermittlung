@@ -264,7 +264,14 @@ tr:last-child td { border-bottom: 0; }
   align-items: center;
   margin: 10px 0;
 }
+.history-window-actions {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+  margin-top: 18px;
+}
 .history-tabs { display: flex; gap: 8px; margin: 8px 0 12px; }
+.history-reset-open { margin-left: auto; }
 .history-tab.is-active {
   background: var(--accent-button);
   border-color: var(--accent-button);
@@ -1269,25 +1276,18 @@ function formatHistoryTime(value) {
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString('de-DE', {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'});
 }
-function renderHistoryChart(container, points) {
+function renderHistoryChart(container, data) {
+  const points = data.points || [];
   const okPoints = points.filter((item) => item.ok && item.price_cents !== null && item.price_cents !== undefined);
-  if (!points.length) {
-    container.innerHTML = '<div class="history-chart-empty">Noch keine Einträge für diesen Zeitraum.</div>';
-    return;
-  }
-  if (!okPoints.length) {
-    container.innerHTML = '<div class="history-chart-empty">In diesem Zeitraum gibt es nur fehlerhafte Abrufe.</div>';
-    return;
-  }
+  const emptyMessage = !points.length ? 'Noch keine Einträge für diesen Zeitraum.' : (!okPoints.length ? 'In diesem Zeitraum gibt es nur fehlerhafte Abrufe.' : '');
   const width = 720;
   const height = 260;
   const pad = {left: 52, right: 18, top: 18, bottom: 40};
-  const times = points.map((item) => new Date(item.checked_at).getTime()).filter((value) => !Number.isNaN(value));
-  const minTime = Math.min(...times);
-  const maxTime = Math.max(...times);
+  const minTime = new Date(data.window_start).getTime();
+  const maxTime = new Date(data.window_end).getTime();
   const prices = okPoints.map((item) => Number(item.price_cents));
-  let minPrice = Math.min(...prices);
-  let maxPrice = Math.max(...prices);
+  let minPrice = prices.length ? Math.min(...prices) : 0;
+  let maxPrice = prices.length ? Math.max(...prices) : 100;
   if (minPrice === maxPrice) {
     minPrice -= 1;
     maxPrice += 1;
@@ -1301,6 +1301,15 @@ function renderHistoryChart(container, points) {
     const ratio = (Number(cents) - minPrice) / (maxPrice - minPrice);
     return height - pad.bottom - ratio * (height - pad.top - pad.bottom);
   };
+  const ticks = (data.ticks || []).map((value) => ({value, ts: new Date(value).getTime()})).filter((item) => !Number.isNaN(item.ts));
+  const labelEvery = Math.max(1, Math.ceil(ticks.length / 7));
+  const grid = ticks.map((tick, index) => {
+    const x = xFor(tick.value).toFixed(1);
+    const label = index % labelEvery === 0 || index === ticks.length - 1
+      ? `<text x="${x}" y="${height - 12}" text-anchor="middle" fill="var(--muted)" font-size="11">${formatHistoryTime(tick.value).replace(/\.\d{4},? /, ' ')}</text>`
+      : '';
+    return `<line x1="${x}" y1="${pad.top}" x2="${x}" y2="${height - pad.bottom}" stroke="var(--line)" opacity=".45"/>${label}`;
+  }).join('');
   const line = okPoints.map((item, index) => `${index ? 'L' : 'M'}${xFor(item.checked_at).toFixed(1)} ${yFor(item.price_cents).toFixed(1)}`).join(' ');
   const circles = points.map((item) => {
     const x = xFor(item.checked_at).toFixed(1);
@@ -1309,16 +1318,19 @@ function renderHistoryChart(container, points) {
     const label = item.ok ? centsToText(item.price_cents) : (item.error || 'Fehler');
     return `<circle cx="${x}" cy="${y}" r="4" fill="${color}"><title>${formatHistoryTime(item.checked_at)} · ${label}</title></circle>`;
   }).join('');
+  const notice = emptyMessage
+    ? `<text x="${width / 2}" y="${height / 2}" text-anchor="middle" fill="var(--muted)" font-size="14">${emptyMessage}</text>`
+    : '';
   container.innerHTML = `
     <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Preisverlauf">
       <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}" stroke="var(--line)"/>
       <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" stroke="var(--line)"/>
+      ${grid}
       <text x="8" y="${pad.top + 6}" fill="var(--muted)" font-size="12">${centsToText(maxPrice)}</text>
       <text x="8" y="${height - pad.bottom + 4}" fill="var(--muted)" font-size="12">${centsToText(minPrice)}</text>
       <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
       ${circles}
-      <text x="${pad.left}" y="${height - 12}" fill="var(--muted)" font-size="12">${formatHistoryTime(new Date(minTime).toISOString())}</text>
-      <text x="${width - pad.right}" y="${height - 12}" text-anchor="end" fill="var(--muted)" font-size="12">${formatHistoryTime(new Date(maxTime).toISOString())}</text>
+      ${notice}
     </svg>`;
 }
 function renderHistoryTable(container, data) {
@@ -1339,27 +1351,36 @@ function renderHistoryTable(container, data) {
 }
 async function loadHistoryDialog(dialog, page = 1) {
   const productId = dialog.dataset.productId || '';
-  const range = dialog.querySelector('[data-history-range]')?.value || '4weeks';
+  const range = dialog.querySelector('[data-history-range]')?.value || '1m';
+  const offset = Number(dialog.dataset.historyOffset || '0');
   const chart = dialog.querySelector('[data-history-chart]');
   const table = dialog.querySelector('[data-history-table]');
   const pageInfo = dialog.querySelector('[data-history-page-info]');
   if (chart) chart.innerHTML = '<div class="history-loading">Verlauf wird geladen...</div>';
   if (table) table.innerHTML = '';
-  const response = await fetch(`/api/products/${encodeURIComponent(productId)}/history?range=${encodeURIComponent(range)}&page=${page}`, {cache: 'no-store'});
+  const response = await fetch(`/api/products/${encodeURIComponent(productId)}/history?range=${encodeURIComponent(range)}&page=${page}&offset=${offset}`, {cache: 'no-store'});
   const data = await response.json();
   dialog.dataset.historyPage = String(data.page || 1);
   dialog.dataset.historyTotalPages = String(data.total_pages || 1);
-  if (chart) renderHistoryChart(chart, data.points || []);
+  dialog.dataset.historyOffset = String(data.offset || 0);
+  if (chart) renderHistoryChart(chart, data);
   if (table) renderHistoryTable(table, data);
-  if (pageInfo) pageInfo.textContent = `Seite ${data.page || 1} von ${data.total_pages || 1} · ${data.total || 0} Einträge`;
+  if (pageInfo) pageInfo.textContent = `${data.range_label || 'Zeitraum'} · Seite ${data.page || 1} von ${data.total_pages || 1} · ${data.total || 0} Einträge`;
   dialog.querySelectorAll('[data-history-page]').forEach((button) => {
     const direction = button.dataset.historyPage;
     button.disabled = direction === 'prev' ? (data.page || 1) <= 1 : (data.page || 1) >= (data.total_pages || 1);
   });
+  dialog.querySelectorAll('[data-history-window]').forEach((button) => {
+    button.disabled = button.dataset.historyWindow === 'next' && !data.can_forward;
+  });
 }
 document.addEventListener('change', (event) => {
   const select = event.target.closest('[data-history-range]');
-  if (select) loadHistoryDialog(select.closest('[data-history-dialog]'), 1);
+  if (select) {
+    const dialog = select.closest('[data-history-dialog]');
+    dialog.dataset.historyOffset = '0';
+    loadHistoryDialog(dialog, 1);
+  }
 });
 document.addEventListener('click', (event) => {
   const tab = event.target.closest('[data-history-tab]');
@@ -1376,6 +1397,15 @@ document.addEventListener('click', (event) => {
     const current = Number(dialog.dataset.historyPage || '1');
     const next = pageButton.dataset.historyPage === 'prev' ? current - 1 : current + 1;
     loadHistoryDialog(dialog, next);
+    return;
+  }
+  const windowButton = event.target.closest('[data-history-window]');
+  if (windowButton) {
+    const dialog = windowButton.closest('[data-history-dialog]');
+    const current = Number(dialog.dataset.historyOffset || '0');
+    const next = windowButton.dataset.historyWindow === 'prev' ? current + 1 : Math.max(0, current - 1);
+    dialog.dataset.historyOffset = String(next);
+    loadHistoryDialog(dialog, 1);
   }
 });
 
@@ -1708,6 +1738,15 @@ def current_process_memory_text() -> str:
             return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
         value /= 1024
     return f"{value:.1f} GB"
+
+
+def format_bytes(value: int) -> str:
+    amount = float(value or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if amount < 1024 or unit == "GB":
+            return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
+        amount /= 1024
+    return f"{amount:.1f} GB"
 
 
 def safe_local_redirect_target(value: str, fallback: str = "/") -> str:
@@ -2845,22 +2884,56 @@ def remove_price_history(product_ids: set[str]) -> None:
             return
 
 
-def history_since_timestamp(range_key: str) -> Optional[float]:
-    now = time.time()
+def price_history_cache_info() -> Dict[str, Any]:
+    size = PRICE_HISTORY_PATH.stat().st_size if PRICE_HISTORY_PATH.exists() else 0
+    entries = 0
+    if PRICE_HISTORY_PATH.exists():
+        try:
+            with PRICE_HISTORY_PATH.open("r", encoding="utf-8", errors="replace") as handle:
+                entries = sum(1 for line in handle if line.strip())
+        except OSError:
+            entries = 0
+    return {"entries": entries, "size_bytes": size}
+
+
+def history_range_meta(range_key: str) -> Dict[str, Any]:
     ranges = {
-        "hour": 60 * 60,
-        "day": 24 * 60 * 60,
-        "week": 7 * 24 * 60 * 60,
-        "4weeks": 28 * 24 * 60 * 60,
-        "month": 31 * 24 * 60 * 60,
-        "year": 366 * 24 * 60 * 60,
+        "24h": {"label": "24 Stunden", "seconds": 24 * 60 * 60, "tick_seconds": 60 * 60},
+        "7d": {"label": "7 Tage", "seconds": 7 * 24 * 60 * 60, "tick_seconds": 24 * 60 * 60},
+        "14d": {"label": "14 Tage", "seconds": 14 * 24 * 60 * 60, "tick_seconds": 24 * 60 * 60},
+        "1m": {"label": "1 Monat", "seconds": 30 * 24 * 60 * 60, "tick_seconds": 24 * 60 * 60},
+        "6m": {"label": "6 Monate", "seconds": 180 * 24 * 60 * 60, "tick_seconds": 30 * 24 * 60 * 60},
+        "12m": {"label": "12 Monate", "seconds": 365 * 24 * 60 * 60, "tick_seconds": 30 * 24 * 60 * 60},
     }
-    seconds = ranges.get(range_key)
-    return now - seconds if seconds else None
+    return ranges.get(range_key) or ranges["1m"]
 
 
-def read_price_history(product_id: str, range_key: str = "4weeks", page: int = 1, per_page: int = 25) -> Dict[str, Any]:
-    since = history_since_timestamp(range_key)
+def history_window(range_key: str, offset: int = 0) -> Dict[str, Any]:
+    meta = history_range_meta(range_key)
+    offset = max(0, int(offset or 0))
+    end_ts = time.time() - offset * int(meta["seconds"])
+    start_ts = end_ts - int(meta["seconds"])
+    tick_seconds = int(meta["tick_seconds"])
+    ticks = []
+    tick = start_ts
+    while tick <= end_ts + 1:
+        ticks.append(datetime.fromtimestamp(tick, timezone.utc).isoformat())
+        tick += tick_seconds
+    if ticks[-1] != datetime.fromtimestamp(end_ts, timezone.utc).isoformat():
+        ticks.append(datetime.fromtimestamp(end_ts, timezone.utc).isoformat())
+    return {
+        **meta,
+        "offset": offset,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "start_at": datetime.fromtimestamp(start_ts, timezone.utc).isoformat(),
+        "end_at": datetime.fromtimestamp(end_ts, timezone.utc).isoformat(),
+        "ticks": ticks,
+    }
+
+
+def read_price_history(product_id: str, range_key: str = "1m", page: int = 1, per_page: int = 25, offset: int = 0) -> Dict[str, Any]:
+    window = history_window(range_key, offset)
     records: List[Dict[str, Any]] = []
     if PRICE_HISTORY_PATH.exists():
         with history_lock:
@@ -2874,7 +2947,7 @@ def read_price_history(product_id: str, range_key: str = "4weeks", page: int = 1
                         if str(record.get("product_id")) != str(product_id):
                             continue
                         ts = history_timestamp_value(record.get("checked_at"))
-                        if since is not None and ts < since:
+                        if ts < float(window["start_ts"]) or ts > float(window["end_ts"]):
                             continue
                         record["_ts"] = ts
                         records.append(record)
@@ -2904,6 +2977,12 @@ def read_price_history(product_id: str, range_key: str = "4weeks", page: int = 1
         "ok": True,
         "product_id": product_id,
         "range": range_key,
+        "range_label": window["label"],
+        "offset": window["offset"],
+        "can_forward": int(window["offset"]) > 0,
+        "window_start": window["start_at"],
+        "window_end": window["end_at"],
+        "ticks": window["ticks"],
         "page": page,
         "per_page": per_page,
         "total": total,
@@ -3757,6 +3836,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     categories_by_id = category_lookup(config)
     image_dialogs = []
     history_dialogs = []
+    reset_history_dialogs = []
     move_dialogs = []
     delete_product_dialogs = []
     for product in products:
@@ -3853,6 +3933,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         )
         move_dialog_id = f"move-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
         delete_product_dialog_id = f"delete-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
+        reset_history_dialog_id = f"reset-history-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
         history_dialogs.append(
             f'<div class="dialog-backdrop" id="{escape(history_dialog_id)}" data-history-dialog="true" data-product-id="{escape(str(product.get("id", "")))}">'
             '<section class="dialog">'
@@ -3862,18 +3943,22 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '</div>'
             '<div class="history-controls">'
             '<div class="field"><label>Zeitraum</label><select data-history-range>'
-            '<option value="year">1 Jahr</option>'
-            '<option value="month">1 Monat</option>'
-            '<option value="4weeks" selected>4 Wochen</option>'
-            '<option value="week">1 Woche</option>'
-            '<option value="day">1 Tag</option>'
-            '<option value="hour">1 Stunde</option>'
-            '<option value="all">Alles</option>'
+            '<option value="24h">24 Stunden</option>'
+            '<option value="7d">7 Tage</option>'
+            '<option value="14d">14 Tage</option>'
+            '<option value="1m" selected>1 Monat</option>'
+            '<option value="6m">6 Monate</option>'
+            '<option value="12m">12 Monate</option>'
             '</select></div>'
+            '<div class="history-window-actions">'
+            '<button class="button" type="button" data-history-window="prev">← Zurück</button>'
+            '<button class="button" type="button" data-history-window="next">Weiter →</button>'
+            '</div>'
             '</div>'
             '<div class="history-tabs">'
             '<button class="history-tab is-active" type="button" data-history-tab="chart">Verlauf</button>'
             '<button class="history-tab" type="button" data-history-tab="log">Log</button>'
+            f'<button class="button danger history-reset-open" type="button" data-dialog-open="{escape(reset_history_dialog_id)}">{icon("trash")} Reset</button>'
             '</div>'
             '<div data-history-panel="chart"><div class="history-chart" data-history-chart><div class="history-loading">Verlauf wird geladen...</div></div></div>'
             '<div data-history-panel="log" hidden>'
@@ -3884,6 +3969,18 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '<button type="button" data-history-page="next">Weiter</button>'
             '</div></div>'
             '</section></div>'
+        )
+        reset_history_dialogs.append(
+            f'<div class="dialog-backdrop" id="{escape(reset_history_dialog_id)}">'
+            '<section class="dialog">'
+            '<div class="dialog-head">'
+            f'<div><h2>Statistik zurücksetzen?</h2><div class="small">{product_name}</div></div>'
+            '<button class="dialog-close" type="button" data-dialog-close aria-label="Schließen">×</button>'
+            '</div>'
+            '<div class="small">Alle gespeicherten Statistik-Einträge für diesen Artikel werden gelöscht. Der Artikel selbst bleibt erhalten.</div>'
+            f'<form method="post" action="/products/{escape(str(product.get("id", "")))}/history/reset">'
+            '<div class="actions" style="margin-top: 12px"><button class="danger" type="submit">Statistik zurücksetzen</button>'
+            '<button class="button" type="button" data-dialog-close>Abbrechen</button></div></form></section></div>'
         )
         product_mqtt_notice = pop_product_mqtt_notice(state, str(product.get("id", "")))
         product_mqtt_notice_html = f'<div class="notice" style="margin-top: 10px">{escape(product_mqtt_notice)}</div>' if product_mqtt_notice else ""
@@ -4337,6 +4434,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
   {''.join(delete_product_dialogs)}
   {''.join(image_dialogs)}
   {''.join(history_dialogs)}
+  {''.join(reset_history_dialogs)}
   <script>{SCRIPT}</script>
 </body>
 </html>"""
@@ -4354,7 +4452,9 @@ def render_install_info_card() -> str:
         ("tmp", app_dir / "tmp", "temporäre App-Dateien"),
         ("config.yaml", app_dir / "config.yaml", "lokale Konfiguration und Artikelliste"),
         ("state.json", app_dir / "state.json", "Laufzeitstatus, letzte Preise und Fortschritt"),
+        ("price_history.jsonl", app_dir / "price_history.jsonl", "persistenter Preisverlauf aller Aktualisierungen"),
     ]
+    history_info = price_history_cache_info()
     python_packages = [
         "Flask",
         "gunicorn",
@@ -4438,6 +4538,14 @@ def render_install_info_card() -> str:
               <thead><tr><th colspan="3">App-lokal unter <code>{escape(str(app_dir))}</code></th></tr></thead>
               <tbody>{local_rows}</tbody>
             </table>
+          </div>
+          <div class="soft-panel" style="margin-top: 12px">
+            <h4>Preisstatistik</h4>
+            <div class="small">Der Preisverlauf wird dauerhaft in <code>price_history.jsonl</code> gespeichert und bleibt nach einem Neustart erhalten.</div>
+            <div class="metric-grid" style="margin-top: 10px">
+              <div class="metric"><span>Einträge</span><strong>{escape(str(history_info["entries"]))}</strong></div>
+              <div class="metric"><span>Dateigröße</span><strong>{escape(format_bytes(int(history_info["size_bytes"])))}</strong></div>
+            </div>
           </div>
           <div class="table-wrap" style="margin-top: 12px">
             <table class="info-table">
@@ -5824,14 +5932,18 @@ def api_progress() -> Response:
 
 @app.get("/api/products/<product_id>/history")
 def api_product_history(product_id: str) -> Response:
-    range_key = request.args.get("range", "4weeks")
-    if range_key not in {"year", "month", "4weeks", "week", "day", "hour", "all"}:
-        range_key = "4weeks"
+    range_key = request.args.get("range", "1m")
+    if range_key not in {"24h", "7d", "14d", "1m", "6m", "12m"}:
+        range_key = "1m"
     try:
         page = int(request.args.get("page", "1") or 1)
     except ValueError:
         page = 1
-    return jsonify(read_price_history(product_id, range_key, page, 25))
+    try:
+        offset = int(request.args.get("offset", "0") or 0)
+    except ValueError:
+        offset = 0
+    return jsonify(read_price_history(product_id, range_key, page, 25, offset))
 
 
 @app.get("/api/update-status")
@@ -6292,6 +6404,13 @@ def delete_product(product_id: str) -> Response:
         save_state(state)
     remove_price_history({product_id})
     return redirect(url_for("index"))
+
+
+@app.post("/products/<product_id>/history/reset")
+def reset_product_history(product_id: str) -> Response:
+    remove_price_history({product_id})
+    set_notice("Preisstatistik wurde zurückgesetzt.")
+    return redirect(url_for("index", done=1, _anchor=f"product-{product_id}"))
 
 
 @app.post("/products/<product_id>/category")
