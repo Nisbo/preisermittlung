@@ -51,7 +51,7 @@ STATE_PATH = Path(__file__).with_name("state.json")
 GENERATED_PATH = Path(__file__).with_name("generated")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.10-dev"
+APP_VERSION = "0.1.11-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -1037,6 +1037,11 @@ body[data-theme="dark"] .visual-price-map {
 
 SCRIPT = """
 let refreshWasRunning = false;
+function withQueryParam(url, key, value) {
+  const target = new URL(url || window.location.href, window.location.origin);
+  target.searchParams.set(key, value);
+  return target.pathname + target.search + target.hash;
+}
 function showBusyOverlay(message) {
   const textMessage = message || 'Vorgang läuft...';
   const overlay = document.querySelector('[data-busy-overlay]');
@@ -1070,7 +1075,11 @@ async function pollProgress() {
       window.setTimeout(pollProgress, 900);
     } else if (refreshWasRunning && progress.finished_at) {
       text.textContent = `Fertig: ${done}/${total}`;
-      if (!window.location.search.includes('done=1')) window.location = '/?done=1';
+      window.setTimeout(() => {
+        box.hidden = true;
+        const target = withQueryParam(window.location.href, 'done', '1');
+        if (!new URLSearchParams(window.location.search).has('done')) window.location = target;
+      }, 700);
     }
   } catch (_) {
     window.setTimeout(pollProgress, 2000);
@@ -1484,6 +1493,26 @@ def current_process_memory_text() -> str:
             return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
         value /= 1024
     return f"{value:.1f} GB"
+
+
+def safe_local_redirect_target(value: str, fallback: str = "/") -> str:
+    target = (value or "").strip()
+    if not target:
+        return fallback
+    parsed = urllib.parse.urlparse(target)
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
+        return fallback
+    if target.endswith("?"):
+        return target[:-1]
+    return target
+
+
+def local_url_with_query(value: str, key: str, query_value: str) -> str:
+    parsed = urllib.parse.urlparse(value)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query = [(item_key, item_value) for item_key, item_value in query if item_key != key]
+    query.append((key, query_value))
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
 
 
 def add_seconds_iso(value: Optional[str], seconds: float) -> Optional[str]:
@@ -3552,7 +3581,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             f"<td data-label=\"Geändert\" data-sort-value=\"{escape(str(item_state.get('last_changed_at') or ''))}\"><span class=\"small\">{escape(format_datetime_de(item_state.get('last_changed_at')))}</span></td>"
             f"<td data-label=\"Status\" data-sort-value=\"{escape(status + ' ' + str(last_error or ''))}\" class=\"{'warn' if last_error or not is_enabled else 'ok'}\">{status_html}</td>"
             "<td data-label=\"Aktionen\"><div class=\"row-actions action-grid\">"
-            f"<form method=\"post\" action=\"/products/{escape(product.get('id', ''))}/refresh\"><button class=\"icon-only\" title=\"Einzeln aktualisieren\" aria-label=\"Einzeln aktualisieren\">{icon('refresh')}</button></form>"
+            f"<form method=\"post\" action=\"/products/{escape(product.get('id', ''))}/refresh\"><input type=\"hidden\" name=\"return_to\" value=\"{escape(request.full_path)}\"><button class=\"icon-only\" title=\"Einzeln aktualisieren\" aria-label=\"Einzeln aktualisieren\">{icon('refresh')}</button></form>"
             f"<button class=\"icon-only\" type=\"button\" data-dialog-open=\"{escape(move_dialog_id)}\" title=\"Artikel bearbeiten\" aria-label=\"Artikel bearbeiten\">{icon('settings')}</button>"
             + (
                 f"<a class=\"button icon-only\" href=\"{escape(pdf_page_url(item_state.get('url'), item_state.get('pdf_page')) if provider_kind(provider) == 'prospect' else str(item_state.get('url')))}\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Öffnen\" aria-label=\"Öffnen\">{icon('shop')}</a>"
@@ -5346,7 +5375,8 @@ def refresh_all() -> Response:
 @app.post("/products/<product_id>/refresh")
 def refresh_product(product_id: str) -> Response:
     start_refresh(product_id)
-    return redirect(url_for("index"))
+    target = safe_local_redirect_target(request.form.get("return_to", ""), url_for("index"))
+    return redirect(local_url_with_query(target, "refresh_started", "1"))
 
 
 @app.post("/markets/search")

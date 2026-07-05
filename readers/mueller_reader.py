@@ -31,6 +31,8 @@ def get_html(url: str) -> str:
         headers={
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "accept-language": "de-DE,de;q=0.9,en;q=0.7",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
             "user-agent": USER_AGENT_OVERRIDE or DESKTOP_USER_AGENT,
         },
     )
@@ -94,6 +96,15 @@ def number(pattern: str, text: str) -> Optional[float]:
     return float(match.group(1)) if match else None
 
 
+def german_price_value(value: str) -> Optional[float]:
+    cleaned = value.strip().replace(".", "").replace(",", ".")
+    return float_value(cleaned)
+
+
+def price_pattern_for(value: float) -> str:
+    return re.escape(euro_text(value).replace(" €", "")).replace(",", r"\s*,\s*") + r"\s*€"
+
+
 def text_value(pattern: str, text: str) -> Optional[str]:
     match = re.search(pattern, text)
     return html.unescape(match.group(1)) if match else None
@@ -151,6 +162,29 @@ def extract_json_ld(raw_html: str) -> Dict[str, Any]:
     return {}
 
 
+def visible_text(raw_html: str) -> str:
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", raw_html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", html.unescape(text))
+
+
+def extract_visible_offer_price(raw_html: str, old_price: Optional[float]) -> Optional[float]:
+    text = visible_text(raw_html)
+    if old_price is not None:
+        old_pattern = price_pattern_for(old_price)
+        match = re.search(rf"([0-9]+(?:[.,][0-9]{{2}})?)\s*€\s*UVP\s*{old_pattern}", text, flags=re.IGNORECASE)
+        if match:
+            return german_price_value(match.group(1))
+        match = re.search(rf"UVP\s*{old_pattern}\s*([0-9]+(?:[.,][0-9]{{2}})?)\s*€(?!\s*/)", text, flags=re.IGNORECASE)
+        if match:
+            return german_price_value(match.group(1))
+    match = re.search(r"([0-9]+(?:[.,][0-9]{2})?)\s*€\s*UVP\s*[0-9]+(?:[.,][0-9]{2})?\s*€", text, flags=re.IGNORECASE)
+    if match:
+        return german_price_value(match.group(1))
+    return None
+
+
 def extract_image_url(chunk: str, json_ld: Dict[str, Any]) -> Optional[str]:
     match = re.search(r'"images":\[(.*?)\],"manufacturer"', chunk, flags=re.DOTALL)
     image_block = match.group(1) if match else chunk
@@ -196,6 +230,9 @@ def read_mueller_product(product: Dict[str, str], _market: Dict[str, Any], _post
     )
     if structured_price is not None:
         current_price = structured_price
+    visible_offer_price = extract_visible_offer_price(raw_html, old_price)
+    if visible_offer_price is not None:
+        current_price = visible_offer_price
 
     if current_price is None:
         raise RuntimeError(f"Kein Mueller-Preis fuer {url} gefunden.")
