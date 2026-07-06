@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.32-dev"
+APP_VERSION = "0.1.33-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -2223,6 +2223,61 @@ def categories_from_config(config: Dict[str, Any]) -> List[Dict[str, str]]:
     return sorted(categories, key=lambda category: (category.get("name") or category["id"]).casefold())
 
 
+def parse_category_id_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        raw_values = value
+    else:
+        raw_values = str(value or "").replace(";", ",").split(",")
+    result = []
+    for raw in raw_values:
+        category_id = str(raw or "").strip()
+        if category_id and category_id not in result:
+            result.append(category_id)
+    return result
+
+
+def category_groups_from_config(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    valid_ids = {category["id"] for category in categories_from_config(config)}
+    groups = []
+    for group in config.get("category_groups") or []:
+        group_id = str(group.get("id") or "").strip()
+        if not group_id:
+            continue
+        category_ids = [
+            category_id
+            for category_id in parse_category_id_list(group.get("category_ids"))
+            if category_id in valid_ids
+        ]
+        groups.append({
+            "id": group_id,
+            "name": group.get("name") or group_id,
+            "category_ids": category_ids,
+        })
+    return sorted(groups, key=lambda group: (group.get("name") or group["id"]).casefold())
+
+
+def category_group_lookup(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    return {group["id"]: group for group in category_groups_from_config(config)}
+
+
+def category_groups_for_category(config: Dict[str, Any], category_id: str) -> List[Dict[str, Any]]:
+    return [
+        group for group in category_groups_from_config(config)
+        if category_id in (group.get("category_ids") or [])
+    ]
+
+
+def unique_category_group_id(groups: List[Dict[str, Any]], name: str) -> str:
+    existing = {group.get("id") for group in groups}
+    base = slug_from_name(name)
+    if base not in existing:
+        return base
+    index = 2
+    while f"{base}_{index}" in existing:
+        index += 1
+    return f"{base}_{index}"
+
+
 def category_name(config: Dict[str, Any], category_id: Optional[str]) -> str:
     lookup = {category["id"]: category.get("name") or category["id"] for category in categories_from_config(config)}
     return lookup.get(category_id or DEFAULT_CATEGORY_ID, DEFAULT_CATEGORY_NAME)
@@ -2324,6 +2379,26 @@ def category_admin_row_html(category: Dict[str, Any], product_count: int) -> str
         '<div class="row-actions">'
         f'<a class="button" href="/?edit_category={escape(category["id"])}">Bearbeiten</a>'
         f'{delete_button}</div></div>'
+    )
+
+
+def category_group_admin_row_html(group: Dict[str, Any], categories_by_id: Dict[str, Dict[str, Any]]) -> str:
+    chips = " ".join(
+        category_chip_html(categories_by_id[category_id])
+        for category_id in group.get("category_ids", [])
+        if category_id in categories_by_id
+    )
+    if not chips:
+        chips = '<span class="small">Keine Kategorien zugeordnet.</span>'
+    return (
+        '<div class="market-row">'
+        f'<div><strong>{escape(group.get("name") or group["id"])}</strong><br>'
+        f'<span class="small">ID {escape(group["id"])} · {len(group.get("category_ids", []))} Kategorien</span>'
+        f'<div class="quick-cats" style="margin-top: 6px">{chips}</div></div>'
+        '<div class="row-actions">'
+        f'<a class="button" href="/?categories_dialog=1&edit_category_group={escape(group["id"])}">Bearbeiten</a>'
+        f'<a class="button danger" href="/?categories_dialog=1&delete_category_group={escape(group["id"])}">Löschen</a>'
+        '</div></div>'
     )
 
 
@@ -3098,7 +3173,9 @@ def mqtt_state_payload(config: Dict[str, Any], product: Dict[str, Any]) -> Dict[
     item_state = product.get("state") or {}
     provider = product_provider(config, product)
     market = market_for_selection(provider, product.get("market_id", ""), markets) or {}
-    category = category_lookup(config).get(product_category_id(product), {})
+    product_category = product_category_id(product)
+    category = category_lookup(config).get(product_category, {})
+    product_category_groups = category_groups_for_category(config, product_category)
     market_text = product_market_text(provider, product, market, item_state)
     price_cents = item_state.get("price_cents")
     old_price_cents = item_state.get("old_price_cents")
@@ -3118,11 +3195,13 @@ def mqtt_state_payload(config: Dict[str, Any], product: Dict[str, Any]) -> Dict[
         "source_type": "prospect" if provider_kind(provider) == "prospect" else "shop",
         "market_id": product.get("market_id"),
         "market": market_text,
-        "category_id": product_category_id(product),
+        "category_id": product_category,
         "category": category.get("name") or DEFAULT_CATEGORY_NAME,
         "category_show_in_grouped": category_show_in_grouped(category),
         "category_searchable": category_searchable(category),
         "category_group_expanded": category_group_expanded(category),
+        "category_group_ids": [group["id"] for group in product_category_groups],
+        "category_groups": [group.get("name") or group["id"] for group in product_category_groups],
         "price": mqtt_price,
         "price_cents": price_cents,
         "price_text": format_cents(price_cents),
@@ -3997,6 +4076,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     markets = markets_from_config(config)
     all_products = products_with_state(config)
     categories = categories_from_config(config)
+    category_groups = category_groups_from_config(config)
     providers = provider_choices()
     theme = current_theme(config)
     id_display_mode = product_id_display_mode(config)
@@ -4008,10 +4088,23 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     home_view = default_home_view(config)
     valid_category_ids = {category["id"] for category in categories}
     selected_multi_categories = selected_category_ids_from_args(valid_category_ids)
-    selected_category = request.args.get("category") or "all"
+    category_groups_by_id = {group["id"]: group for group in category_groups}
+    raw_selected_category = request.args.get("category") or "all"
+    selected_category_group = request.args.get("category_group") or ""
+    if str(raw_selected_category).startswith("group:"):
+        selected_category_group = str(raw_selected_category).split(":", 1)[1]
+        raw_selected_category = "all"
+    if selected_category_group not in category_groups_by_id:
+        selected_category_group = ""
+    selected_category = raw_selected_category
     if selected_category != "all" and selected_category not in valid_category_ids:
         selected_category = "all"
-    category_filter_ids = selected_multi_categories or ([] if selected_category == "all" else [selected_category])
+    category_filter_ids = (
+        selected_multi_categories
+        or (category_groups_by_id[selected_category_group].get("category_ids") if selected_category_group else [])
+        or ([] if selected_category == "all" else [selected_category])
+    )
+    category_filter_active = bool(selected_multi_categories or selected_category_group or selected_category != "all")
     selected_shop = request.args.get("shop") or "all"
     target_filter = request.args.get("target") or "all"
     if target_filter not in {"all", "hit"}:
@@ -4022,7 +4115,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     products = [
         product
         for product in all_products
-        if (not category_filter_ids or product_category_id(product) in category_filter_ids)
+        if ((not category_filter_active and not category_filter_ids) or product_category_id(product) in category_filter_ids)
         and (
             selected_shop == "all"
             or (selected_shop == "all_shops" and provider_kind(product_provider(config, product)) != "prospect")
@@ -4147,10 +4240,26 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         or market_provider(market) != delete_market_provider
     )
     notice = pop_notice(state)
-    category_filter_options = f'<option value="all" {"selected" if selected_multi_categories or selected_category == "all" else ""}>Alle Kategorien</option>' + "".join(
-        f'<option value="{escape(category["id"])}" {"selected" if not selected_multi_categories and selected_category == category["id"] else ""}>'
-        f'{escape(category.get("name") or category["id"])}</option>'
-        for category in categories
+    category_filter_options = (
+        f'<option value="all" {"selected" if selected_multi_categories or (not selected_category_group and selected_category == "all") else ""}>Alle Kategorien</option>'
+        '<optgroup label="Kategorien">'
+        + "".join(
+            f'<option value="{escape(category["id"])}" {"selected" if not selected_multi_categories and not selected_category_group and selected_category == category["id"] else ""}>'
+            f'{escape(category.get("name") or category["id"])}</option>'
+            for category in categories
+        )
+        + "</optgroup>"
+        + (
+            '<optgroup label="Gruppen">'
+            + "".join(
+                f'<option value="group:{escape(group["id"])}" {"selected" if selected_category_group == group["id"] else ""}>'
+                f'{escape(group.get("name") or group["id"])}</option>'
+                for group in category_groups
+            )
+            + "</optgroup>"
+            if category_groups
+            else ""
+        )
     )
     shop_filter_options = (
         f'<option value="all" {"selected" if selected_shop == "all" else ""}>Alle Shops &amp; Prospekte</option>'
@@ -4185,6 +4294,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     multi_filter_link_params: Dict[str, Any] = {"categories_filter": "1"}
     if selected_multi_categories:
         multi_filter_link_params["categories"] = selected_multi_categories
+    elif selected_category_group:
+        multi_filter_link_params["category_group"] = selected_category_group
     elif selected_category != "all":
         multi_filter_link_params["categories"] = [selected_category]
     if selected_shop != "all":
@@ -4207,6 +4318,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     category_dialog_hidden_inputs = ""
     if selected_shop != "all":
         category_dialog_hidden_inputs += f'<input type="hidden" name="shop" value="{escape(selected_shop)}">'
+    if selected_category_group:
+        category_dialog_hidden_inputs += f'<input type="hidden" name="category_group" value="{escape(selected_category_group)}">'
     if search_text:
         category_dialog_hidden_inputs += f'<input type="hidden" name="q" value="{escape(search_text)}">'
     if grouped_view:
@@ -4238,6 +4351,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     if selected_multi_categories:
         for category_id in selected_multi_categories:
             base_filter_params.setdefault("categories", []).append(category_id)
+    elif selected_category_group:
+        base_filter_params["category_group"] = selected_category_group
     elif selected_category != "all":
         base_filter_params["category"] = selected_category
     if selected_shop != "all":
@@ -4247,7 +4362,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     if search_text:
         base_filter_params["q"] = search_text
     group_active_class = " is-active" if grouped_view else ""
-    all_active_class = " is-active" if not grouped_view and not selected_multi_categories and selected_category == "all" and selected_shop == "all" and target_filter == "all" and not search_text else ""
+    all_active_class = " is-active" if not grouped_view and not selected_multi_categories and not selected_category_group and selected_category == "all" and selected_shop == "all" and target_filter == "all" and not search_text else ""
     target_filter_params = dict(base_filter_params)
     if target_filter == "hit":
         target_filter_params.pop("target", None)
@@ -4277,8 +4392,25 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         )
         for category in categories
     )
+    category_groups_by_id_for_admin = {group["id"]: group for group in category_groups}
+    category_rows_by_id_for_admin = {category["id"]: category for category in categories}
+    category_group_rows = "".join(
+        category_group_admin_row_html(group, category_rows_by_id_for_admin)
+        for group in category_groups
+    )
+    group_category_checkboxes = "".join(
+        '<label class="category-choice">'
+        f'<span class="category-choice-main">{category_chip_html(category)}</span>'
+        f'<input type="checkbox" name="category_ids" value="{escape(category["id"])}">'
+        '</label>'
+        for category in categories
+    )
     edit_category = next((category for category in categories if category["id"] == edit_category_id), None)
     delete_category = next((category for category in categories if category["id"] == delete_category_id), None)
+    edit_category_group_id = request.args.get("edit_category_group") or ""
+    delete_category_group_id = request.args.get("delete_category_group") or ""
+    edit_category_group = category_groups_by_id_for_admin.get(edit_category_group_id)
+    delete_category_group = category_groups_by_id_for_admin.get(delete_category_group_id)
     delete_category_products = [
         product for product in all_products if delete_category and product_category_id(product) == delete_category["id"]
     ]
@@ -4330,6 +4462,42 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         '<div class="actions" style="margin-top: 12px"><button class="danger" type="submit">Kategorie löschen</button>'
         '<a class="button" href="/?categories_dialog=1">Abbrechen</a></div></form></section></div>'
         if delete_category
+        else ""
+    )
+    edit_category_group_dialog = ""
+    if edit_category_group:
+        edit_group_category_checkboxes = "".join(
+            '<label class="category-choice">'
+            f'<span class="category-choice-main">{category_chip_html(category)}</span>'
+            f'<input type="checkbox" name="category_ids" value="{escape(category["id"])}" {"checked" if category["id"] in (edit_category_group.get("category_ids") or []) else ""}>'
+            '</label>'
+            for category in categories
+        )
+        edit_category_group_dialog = (
+            '<div class="dialog-backdrop" open><section class="dialog">'
+            '<div class="dialog-head">'
+            f'<div><h2>Kategoriegruppe bearbeiten</h2><div class="small">{escape(edit_category_group.get("name") or edit_category_group["id"])}</div></div>'
+            '<a class="button dialog-close" href="/?categories_dialog=1" aria-label="Schließen">×</a>'
+            '</div>'
+            f'<form method="post" action="/category-groups/{escape(edit_category_group["id"])}/update">'
+            f'<div class="field"><label>Name</label><input name="name" value="{escape(edit_category_group.get("name") or "")}" required></div>'
+            '<div class="small" style="margin: 10px 0">Kategorien markieren, die zu dieser Gruppe gehören.</div>'
+            f'<div class="category-choice-list">{edit_group_category_checkboxes}</div>'
+            '<div class="small" style="margin-top: 10px">Nach Änderungen ggf. unter Settings &gt; MQTT „Status für alle“ senden, damit Home Assistant die Gruppenattribute aktualisiert.</div>'
+            '<div class="actions" style="margin-top: 12px"><button class="primary" type="submit">Speichern</button>'
+            '<a class="button" href="/?categories_dialog=1">Abbrechen</a></div></form></section></div>'
+        )
+    delete_category_group_dialog = (
+        '<div class="dialog-backdrop" open><section class="dialog">'
+        '<div class="dialog-head">'
+        f'<div><h2>Kategoriegruppe löschen?</h2><div class="small">{escape(delete_category_group.get("name") or delete_category_group["id"])}</div></div>'
+        '<a class="button dialog-close" href="/?categories_dialog=1" aria-label="Schließen">×</a>'
+        '</div>'
+        '<div class="small">Die Kategorien und Artikel bleiben erhalten. Nur die Gruppe wird gelöscht. Home Assistant sieht die Änderung erst nach erneutem MQTT-Statusversand.</div>'
+        f'<form method="post" action="/category-groups/{escape(delete_category_group["id"])}/delete">'
+        '<div class="actions" style="margin-top: 12px"><button class="danger" type="submit">Gruppe löschen</button>'
+        '<a class="button" href="/?categories_dialog=1">Abbrechen</a></div></form></section></div>'
+        if delete_category_group
         else ""
     )
     generic_analysis = (state.get("generic_analysis") or {}) if show_generic_dialog else {}
@@ -4965,6 +5133,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         sections = []
         implicit_group_overview = (
             not category_filter_ids
+            and not selected_category_group
             and selected_shop == "all"
             and target_filter == "all"
             and not search_text
@@ -5147,7 +5316,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
       <div class="dialog-head">
         <div>
           <h2>Kategorien</h2>
-          <div class="small">Kategorien erstellen, umbenennen, löschen und Artikel später filtern.</div>
+          <div class="small">Kategorien erstellen, umbenennen, löschen und zu Gruppen zusammenfassen.</div>
         </div>
         <a class="button dialog-close" href="/" aria-label="Schließen">×</a>
       </div>
@@ -5166,6 +5335,19 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         </div>
       </form>
       <div class="market-list" style="margin-top: 12px">{category_rows}</div>
+      <div class="settings-card" style="margin-top: 16px">
+        <h3>Kategoriegruppen</h3>
+        <div class="small">Gruppen fassen mehrere Kategorien zusammen. Nach Änderungen bei Gruppen musst du für Home Assistant unter Settings &gt; MQTT „Status für alle“ senden oder auf die nächsten MQTT-Updates warten.</div>
+        <form method="post" action="/category-groups" style="margin-top: 12px">
+          <div class="grid" style="grid-template-columns: 1fr auto">
+            <div class="field"><label>Neue Gruppe</label><input name="name" required placeholder="Lebensmittel"></div>
+            <button class="primary" type="submit">{icon('plus')} Gruppe erstellen</button>
+          </div>
+          <div class="small" style="margin: 10px 0">Kategorien für die neue Gruppe auswählen.</div>
+          <div class="category-choice-list">{group_category_checkboxes}</div>
+        </form>
+        <div class="market-list" style="margin-top: 12px">{category_group_rows or '<div class="small">Noch keine Gruppen gespeichert.</div>'}</div>
+      </div>
     </section>
   </div>
   {multi_category_dialog}
@@ -5235,6 +5417,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
   </div>
   {edit_category_dialog}
   {delete_category_dialog}
+  {edit_category_group_dialog}
+  {delete_category_group_dialog}
   {hit_dialog_html}
   {generic_dialog_html}
   {''.join(move_dialogs)}
@@ -7800,6 +7984,64 @@ def rename_category(category_id: str) -> Response:
     return redirect(url_for("index", categories_dialog=1))
 
 
+@app.post("/category-groups")
+def create_category_group() -> Response:
+    config = load_config()
+    groups = category_groups_from_config(config)
+    name = request.form.get("name", "").strip()
+    valid_ids = {category["id"] for category in categories_from_config(config)}
+    selected_ids = [
+        category_id
+        for category_id in parse_category_id_list(request.form.getlist("category_ids"))
+        if category_id in valid_ids
+    ]
+    if name:
+        groups.append({
+            "id": unique_category_group_id(groups, name),
+            "name": name,
+            "category_ids": selected_ids,
+        })
+        config["category_groups"] = groups
+        save_config(config)
+        set_notice("Kategoriegruppe erstellt. Für Home Assistant ggf. unter Settings > MQTT Status für alle senden.")
+    return redirect(url_for("index", categories_dialog=1))
+
+
+@app.post("/category-groups/<group_id>/update")
+def update_category_group(group_id: str) -> Response:
+    config = load_config()
+    groups = category_groups_from_config(config)
+    valid_ids = {category["id"] for category in categories_from_config(config)}
+    selected_ids = [
+        category_id
+        for category_id in parse_category_id_list(request.form.getlist("category_ids"))
+        if category_id in valid_ids
+    ]
+    name = request.form.get("name", "").strip()
+    for group in groups:
+        if group.get("id") == group_id:
+            if name:
+                group["name"] = name
+            group["category_ids"] = selected_ids
+            break
+    config["category_groups"] = groups
+    save_config(config)
+    set_notice("Kategoriegruppe gespeichert. Für Home Assistant ggf. unter Settings > MQTT Status für alle senden.")
+    return redirect(url_for("index", categories_dialog=1))
+
+
+@app.post("/category-groups/<group_id>/delete")
+def delete_category_group(group_id: str) -> Response:
+    config = load_config()
+    config["category_groups"] = [
+        group for group in category_groups_from_config(config)
+        if group.get("id") != group_id
+    ]
+    save_config(config)
+    set_notice("Kategoriegruppe gelöscht. Für Home Assistant ggf. unter Settings > MQTT Status für alle senden.")
+    return redirect(url_for("index", categories_dialog=1))
+
+
 @app.post("/categories/<category_id>/delete")
 def delete_category(category_id: str) -> Response:
     if category_id == DEFAULT_CATEGORY_ID:
@@ -7842,6 +8084,14 @@ def delete_category(category_id: str) -> Response:
                 product["category_id"] = target_category_id
 
     config["categories"] = [category for category in categories if category["id"] != category_id]
+    cleaned_groups = []
+    for group in category_groups_from_config(config):
+        group["category_ids"] = [
+            item for item in group.get("category_ids", [])
+            if item != category_id
+        ]
+        cleaned_groups.append(group)
+    config["category_groups"] = cleaned_groups
     save_config(config)
     return redirect(url_for("index", categories_dialog=1))
 

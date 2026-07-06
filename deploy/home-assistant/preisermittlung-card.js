@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.3.7";
+const CARD_VERSION = "0.3.8";
 const CARD_TYPE = "preisermittlung-card";
 
 const DEFAULT_CONFIG = {
@@ -148,6 +148,8 @@ function entityToProduct(entityId, stateObj) {
     categoryShowInGrouped: attr.category_show_in_grouped !== false,
     categorySearchable: attr.category_searchable !== false,
     categoryGroupExpanded: attr.category_group_expanded !== false,
+    categoryGroupIds: Array.isArray(attr.category_group_ids) ? attr.category_group_ids : [],
+    categoryGroups: Array.isArray(attr.category_groups) ? attr.category_groups : [],
     price: priceCents !== null ? priceCents / 100 : null,
     priceCents,
     targetPrice,
@@ -342,7 +344,7 @@ class PreisermittlungCard extends HTMLElement {
       computeHelper: (schema) => {
         if (schema.name === "title") return `Preisermittlung Card ${CARD_VERSION}`;
         if (schema.name === "service_url") return "Basis-URL der Preisermittlung-App, z.B. http://192.168.178.10:5050";
-        if (schema.name === "category_id") return "Leer lassen für alle Kategorien. Eine ID oder mehrere IDs mit Komma eintragen, z.B. katzenfutter, trockenfutter.";
+        if (schema.name === "category_id") return "Leer lassen für alle Kategorien. Eine Kategorie-ID, mehrere IDs mit Komma oder eine Gruppe mit group:gruppen_id eintragen.";
         if (schema.name === "target_price_extra_matches_enabled") return "Bei Prospekt-Zusatztreffern kann die Zuordnung unsicher sein, wenn ein Suchwort mehrere Angebote findet. Dort wird kompakt WP angezeigt.";
         if (schema.name === "target_price_filter_active") return "Wenn aktiv, zeigt die Card beim ersten Laden nur Artikel, deren Wunschpreis erreicht wurde.";
         if (schema.name === "target_price_missed_display") return "Erreichte Wunschpreise bleiben grün sichtbar.";
@@ -358,7 +360,10 @@ class PreisermittlungCard extends HTMLElement {
 
   setConfig(config) {
     this._config = normalizeConfig(config);
-    this._selectedCategories = parseCategoryIds(this._config.category_id);
+    const configuredCategories = parseCategoryIds(this._config.category_id);
+    const configuredGroup = configuredCategories.find((id) => id.startsWith("group:"));
+    this._selectedCategoryGroup = configuredGroup ? configuredGroup.slice(6) : "";
+    this._selectedCategories = configuredGroup ? [] : configuredCategories;
     this._categoryDialogOpen = false;
     this._searchText = "";
     this._targetFilterActive = this._config.target_price_filter_active === true;
@@ -393,6 +398,7 @@ class PreisermittlungCard extends HTMLElement {
       .filter(([entityId]) => entityId.startsWith(prefix))
       .map(([entityId, stateObj]) => entityToProduct(entityId, stateObj))
       .filter((product) => !this._selectedCategories.length || this._selectedCategories.includes(product.categoryId))
+      .filter((product) => !this._selectedCategoryGroup || product.categoryGroupIds.includes(this._selectedCategoryGroup))
       .filter((product) => !this._targetFilterActive || product.belowTargetPrice)
       .sort(compareProducts(this._sortBy || this._config.sort_by, this._sortDir || this._config.sort_dir));
   }
@@ -405,6 +411,7 @@ class PreisermittlungCard extends HTMLElement {
       product.shopDetail,
       product.sourceType,
       product.category,
+      ...product.categoryGroups,
       product.articleNumber,
       product.searchTerm,
       product.unitPrice,
@@ -418,7 +425,7 @@ class PreisermittlungCard extends HTMLElement {
     const relevantKeys = [
       "name", "friendly_name", "article_number", "search_term", "provider", "provider_name", "shop", "shop_detail",
       "market", "source_type", "category_id", "category", "price", "price_cents", "price_text", "unit_price", "package_size",
-      "category_show_in_grouped", "category_searchable", "category_group_expanded",
+      "category_show_in_grouped", "category_searchable", "category_group_expanded", "category_group_ids", "category_groups",
       "unit_price_text", "package_size_text", "target_price", "target_price_cents", "target_price_text", "below_target_price",
       "available", "image_url", "status", "error", "url",
       "last_checked", "last_changed", "match_count", "matches", "extra_matches", "pdf_page", "pdf_file",
@@ -466,11 +473,32 @@ class PreisermittlungCard extends HTMLElement {
       .sort((left, right) => left.name.localeCompare(right.name, "de", { sensitivity: "base" }));
   }
 
+  _categoryGroups() {
+    const prefix = this._config.entity_prefix || DEFAULT_CONFIG.entity_prefix;
+    const groups = new Map();
+    Object.entries(this._hass.states)
+      .filter(([entityId]) => entityId.startsWith(prefix))
+      .forEach(([, stateObj]) => {
+        const attr = stateObj.attributes || {};
+        const ids = Array.isArray(attr.category_group_ids) ? attr.category_group_ids : [];
+        const names = Array.isArray(attr.category_groups) ? attr.category_groups : [];
+        ids.forEach((rawId, index) => {
+          const id = String(rawId || "");
+          if (!id || groups.has(id)) return;
+          groups.set(id, { id, name: names[index] || id });
+        });
+      });
+    return [...groups.values()]
+      .sort((left, right) => left.name.localeCompare(right.name, "de", { sensitivity: "base" }));
+  }
+
   _render() {
     if (!this.shadowRoot || !this._hass || !this._config) return;
     const categories = this._categories();
+    const categoryGroups = this._categoryGroups();
     const products = this._products();
     const selectedCategoryNames = this._selectedCategories.map((id) => this._categoryName(categories, id)).filter(Boolean);
+    const selectedGroupName = this._selectedCategoryGroup ? this._categoryGroupName(categoryGroups, this._selectedCategoryGroup) : "";
     const groups = this._config.group_by_category
       ? this._groupProducts(products)
       : [{ id: "_all", name: "", products }];
@@ -481,12 +509,12 @@ class PreisermittlungCard extends HTMLElement {
         <div class="card-header">
           <div>
             <div class="title">${escapeHtml(this._config.title || "Preisermittlung")}</div>
-            <div class="subtitle" data-subtitle>${products.length} Artikel${selectedCategoryNames.length ? " in " + escapeHtml(selectedCategoryNames.join(", ")) : ""}</div>
+            <div class="subtitle" data-subtitle>${products.length} Artikel${selectedGroupName ? " in " + escapeHtml(selectedGroupName) : (selectedCategoryNames.length ? " in " + escapeHtml(selectedCategoryNames.join(", ")) : "")}</div>
           </div>
           <div class="header-controls">
             ${this._config.show_search ? this._searchInput() : ""}
             ${this._config.show_target_price_filter ? this._targetFilterButton() : ""}
-            ${this._config.show_category_filter && (this._config.show_category_dropdown || this._config.show_category_multi_filter) ? this._categorySelect(categories) : ""}
+            ${this._config.show_category_filter && (this._config.show_category_dropdown || this._config.show_category_multi_filter) ? this._categorySelect(categories, categoryGroups) : ""}
           </div>
         </div>
         <div class="content ${this._config.compact ? "compact" : ""}">
@@ -499,10 +527,16 @@ class PreisermittlungCard extends HTMLElement {
 
     const select = this.shadowRoot.querySelector("[data-category-filter]");
     if (select) {
-      select.value = this._selectedCategories.length === 1 ? this._selectedCategories[0] : "";
+      select.value = this._selectedCategoryGroup ? `group:${this._selectedCategoryGroup}` : (this._selectedCategories.length === 1 ? this._selectedCategories[0] : "");
       const updateCategory = (event) => {
         const value = event.target.value ?? "";
-        this._selectedCategories = value ? [value] : [];
+        if (String(value).startsWith("group:")) {
+          this._selectedCategoryGroup = String(value).slice(6);
+          this._selectedCategories = [];
+        } else {
+          this._selectedCategoryGroup = "";
+          this._selectedCategories = value ? [value] : [];
+        }
         this._categoryDialogOpen = false;
         this._render();
       };
@@ -538,6 +572,7 @@ class PreisermittlungCard extends HTMLElement {
         event.preventDefault();
         event.stopPropagation();
         this._selectedCategories = [...this.shadowRoot.querySelectorAll("[data-category-choice]:checked")].map((item) => item.value);
+        this._selectedCategoryGroup = "";
         this._categoryDialogOpen = false;
         this._render();
       });
@@ -549,6 +584,7 @@ class PreisermittlungCard extends HTMLElement {
         event.stopPropagation();
         const value = button.dataset.categorySingle || "";
         this._selectedCategories = value ? [value] : [];
+        this._selectedCategoryGroup = "";
         this._categoryDialogOpen = false;
         this._render();
       });
@@ -559,6 +595,7 @@ class PreisermittlungCard extends HTMLElement {
         event.preventDefault();
         event.stopPropagation();
         this._selectedCategories = [];
+        this._selectedCategoryGroup = "";
         this._categoryDialogOpen = false;
         this._render();
       });
@@ -680,9 +717,13 @@ class PreisermittlungCard extends HTMLElement {
     return categories.find((category) => category.id === id)?.name || id;
   }
 
-  _categorySelect(categories) {
-    const multiActive = this._selectedCategories.length > 1;
-    const selectValue = this._selectedCategories.length === 1 ? this._selectedCategories[0] : "";
+  _categoryGroupName(groups, id) {
+    return groups.find((group) => group.id === id)?.name || id;
+  }
+
+  _categorySelect(categories, categoryGroups) {
+    const multiActive = this._selectedCategories.length > 1 || !!this._selectedCategoryGroup;
+    const selectValue = this._selectedCategoryGroup ? `group:${this._selectedCategoryGroup}` : (this._selectedCategories.length === 1 ? this._selectedCategories[0] : "");
     const showMulti = this._config.show_category_multi_filter !== false;
     const showDropdown = this._config.show_category_dropdown !== false;
     return `
@@ -694,9 +735,16 @@ class PreisermittlungCard extends HTMLElement {
           <span>Kategorie</span>
           <select data-category-filter>
             <option value="" ${selectValue ? "" : "selected"}>Alle Kategorien</option>
+            <optgroup label="Kategorien">
             ${categories.map((category) => `
               <option value="${escapeHtml(category.id)}" ${selectValue === category.id ? "selected" : ""}>${escapeHtml(category.name)}</option>
             `).join("")}
+            </optgroup>
+            ${categoryGroups.length ? `<optgroup label="Gruppen">
+              ${categoryGroups.map((group) => `
+                <option value="group:${escapeHtml(group.id)}" ${selectValue === `group:${group.id}` ? "selected" : ""}>${escapeHtml(group.name)}</option>
+              `).join("")}
+            </optgroup>` : ""}
           </select>
         </label>` : ""}
       </div>
@@ -776,8 +824,10 @@ class PreisermittlungCard extends HTMLElement {
     const subtitle = this.shadowRoot.querySelector("[data-subtitle]");
     if (subtitle) {
       const categories = this._categories();
+      const categoryGroups = this._categoryGroups();
       const selectedCategoryNames = this._selectedCategories.map((id) => this._categoryName(categories, id)).filter(Boolean);
-      subtitle.textContent = `${visibleCount} Artikel${selectedCategoryNames.length ? " in " + selectedCategoryNames.join(", ") : ""}`;
+      const selectedGroupName = this._selectedCategoryGroup ? this._categoryGroupName(categoryGroups, this._selectedCategoryGroup) : "";
+      subtitle.textContent = `${visibleCount} Artikel${selectedGroupName ? " in " + selectedGroupName : (selectedCategoryNames.length ? " in " + selectedCategoryNames.join(", ") : "")}`;
     }
   }
 

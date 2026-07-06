@@ -55,10 +55,10 @@ def parse_simple_yaml(path: Path) -> Dict[str, Any]:
 
         if not line.startswith(" "):
             key = line.rstrip(":").strip()
-            if key not in {"settings", "store", "markets", "products", "categories"}:
+            if key not in {"settings", "store", "markets", "products", "categories", "category_groups"}:
                 raise ConfigError(f"Unbekannter Config-Bereich: {key}")
             section = key
-            config.setdefault(section, [] if section in {"markets", "products", "categories"} else {})
+            config.setdefault(section, [] if section in {"markets", "products", "categories", "category_groups"} else {})
             current_item = None
             continue
 
@@ -69,7 +69,7 @@ def parse_simple_yaml(path: Path) -> Dict[str, Any]:
             config[section][key.strip()] = strip_quotes(value)
             continue
 
-        if section in {"markets", "products", "categories"}:
+        if section in {"markets", "products", "categories", "category_groups"}:
             stripped = line.strip()
             if stripped.startswith("- "):
                 current_item = {}
@@ -129,6 +129,7 @@ def validate_config(config: Dict[str, Any]) -> None:
     if not isinstance(products, list):
         raise ConfigError("Config braucht einen products-Bereich.")
     config.setdefault("categories", [{"id": "allgemein", "name": "Allgemein"}])
+    config.setdefault("category_groups", [])
     for product in products:
         if not product.get("id") or not product.get("article_number"):
             raise ConfigError("Jedes Produkt braucht id und article_number.")
@@ -138,6 +139,8 @@ def validate_config(config: Dict[str, Any]) -> None:
     for market in config.get("markets") or []:
         if not market.get("market_id") or not market.get("postal_code"):
             raise ConfigError("Jeder Markt braucht market_id und postal_code.")
+    if not isinstance(config.get("category_groups"), list):
+        raise ConfigError("Config-Bereich category_groups muss eine Liste sein.")
 
 
 def quote_yaml(value: Any) -> str:
@@ -197,6 +200,18 @@ def write_simple_yaml(config: Dict[str, Any], path: Path = CONFIG_PATH) -> None:
                 lines.append('    searchable: "false"')
             if str(category.get("group_expanded", "true")).strip().lower() in {"0", "false", "no", "off", "nein"}:
                 lines.append('    group_expanded: "false"')
+
+    category_groups = config.get("category_groups") or []
+    if category_groups:
+        lines.append("")
+        lines.append("category_groups:")
+        for group in category_groups:
+            lines.append(f"  - id: {quote_yaml(group.get('id'))}")
+            lines.append(f"    name: {quote_yaml(group.get('name'))}")
+            category_ids = group.get("category_ids") or ""
+            if isinstance(category_ids, (list, tuple)):
+                category_ids = ", ".join(str(category_id) for category_id in category_ids if category_id)
+            lines.append(f"    category_ids: {quote_yaml(category_ids)}")
 
     lines.append("")
     lines.append("products:")
