@@ -52,7 +52,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.26-dev"
+APP_VERSION = "0.1.27-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -256,14 +256,21 @@ tr:last-child td { border-bottom: 0; }
   gap: 6px;
 }
 .price-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 26px;
   min-height: 26px;
   padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
   color: var(--muted);
 }
 .price-icon.is-active {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+  color: #0f8b3d;
+  border-color: color-mix(in srgb, #0f8b3d 55%, var(--line));
+  background: color-mix(in srgb, #0f8b3d 10%, var(--panel));
 }
 .price-icon svg { width: 14px; height: 14px; }
 .history-button {
@@ -1332,18 +1339,20 @@ function formatHistoryDate(value) {
 function renderHistoryChart(container, data) {
   const points = data.points || [];
   const okPoints = points.filter((item) => item.ok && item.price_cents !== null && item.price_cents !== undefined);
+  const noOfferPoints = points.filter((item) => !item.ok && item.error === 'Kein Angebot');
   const emptyMessage = !points.length ? 'Noch keine Einträge für diesen Zeitraum.' : (!okPoints.length ? 'In diesem Zeitraum gibt es nur fehlerhafte Abrufe.' : '');
   const width = 720;
   const height = 260;
-  const pad = {left: 52, right: 18, top: 18, bottom: 40};
+  const pad = {left: 52, right: 18, top: 18, bottom: 58};
   const minTime = new Date(data.window_start).getTime();
   const maxTime = new Date(data.window_end).getTime();
   const prices = okPoints.map((item) => Number(item.price_cents));
   let minPrice = prices.length ? Math.min(...prices) : 0;
   let maxPrice = prices.length ? Math.max(...prices) : 100;
   if (minPrice === maxPrice) {
-    minPrice -= 1;
-    maxPrice += 1;
+    const spread = Math.max(10, Math.round(Math.abs(maxPrice) * 0.05));
+    minPrice -= spread;
+    maxPrice += spread;
   }
   const xFor = (value) => {
     const ts = new Date(value).getTime();
@@ -1364,12 +1373,22 @@ function renderHistoryChart(container, data) {
     return `<line x1="${x}" y1="${pad.top}" x2="${x}" y2="${height - pad.bottom}" stroke="var(--line)" opacity=".45"/>${label}`;
   }).join('');
   const line = okPoints.map((item, index) => `${index ? 'L' : 'M'}${xFor(item.checked_at).toFixed(1)} ${yFor(item.price_cents).toFixed(1)}`).join(' ');
+  const noOfferY = height - pad.bottom + 18;
+  const noOfferLine = noOfferPoints.length > 1
+    ? noOfferPoints.map((item, index) => `${index ? 'L' : 'M'}${xFor(item.checked_at).toFixed(1)} ${noOfferY.toFixed(1)}`).join(' ')
+    : '';
+  const unavailableLabel = noOfferPoints.length
+    ? `<text x="${pad.left}" y="${noOfferY + 4}" text-anchor="end" fill="var(--warn)" font-size="11">Kein Angebot</text>`
+    : '';
   const circles = points.map((item) => {
     const x = xFor(item.checked_at).toFixed(1);
-    const y = item.ok && item.price_cents !== null && item.price_cents !== undefined ? yFor(item.price_cents).toFixed(1) : (height - pad.bottom + 14).toFixed(1);
-    const color = item.ok ? 'var(--accent)' : 'var(--warn)';
+    const isNoOffer = !item.ok && item.error === 'Kein Angebot';
+    const y = item.ok && item.price_cents !== null && item.price_cents !== undefined
+      ? yFor(item.price_cents).toFixed(1)
+      : (isNoOffer ? noOfferY : height - pad.bottom + 8).toFixed(1);
+    const color = item.ok ? 'var(--accent)' : (isNoOffer ? '#9a6a00' : 'var(--warn)');
     const label = item.ok ? centsToText(item.price_cents) : (item.error || 'Fehler');
-    return `<circle cx="${x}" cy="${y}" r="4" fill="${color}"><title>${formatHistoryTime(item.checked_at)} · ${label}</title></circle>`;
+    return `<circle cx="${x}" cy="${y}" r="${isNoOffer ? 4.5 : 4}" fill="${color}"><title>${formatHistoryTime(item.checked_at)} · ${label}</title></circle>`;
   }).join('');
   const notice = emptyMessage
     ? `<text x="${width / 2}" y="${height / 2}" text-anchor="middle" fill="var(--muted)" font-size="14">${emptyMessage}</text>`
@@ -1381,7 +1400,9 @@ function renderHistoryChart(container, data) {
       ${grid}
       <text x="8" y="${pad.top + 6}" fill="var(--muted)" font-size="12">${centsToText(maxPrice)}</text>
       <text x="8" y="${height - pad.bottom + 4}" fill="var(--muted)" font-size="12">${centsToText(minPrice)}</text>
-      <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+      ${line ? `<path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>` : ''}
+      ${noOfferLine ? `<path d="${noOfferLine}" fill="none" stroke="#9a6a00" stroke-width="2" stroke-dasharray="5 4"/>` : ''}
+      ${unavailableLabel}
       ${circles}
       ${notice}
     </svg>`;
@@ -2761,6 +2782,7 @@ def mqtt_state_payload(config: Dict[str, Any], product: Dict[str, Any]) -> Dict[
     old_price_cents = item_state.get("old_price_cents")
     target_cents = product_target_price_cents(product)
     status = "disabled" if not product_enabled(product) else ("error" if item_state.get("last_error") else "ok")
+    no_offer = product_no_offer(item_state)
     payload = {
         "id": product.get("id"),
         "name": product_display_name(product, item_state),
@@ -2793,7 +2815,7 @@ def mqtt_state_payload(config: Dict[str, Any], product: Dict[str, Any]) -> Dict[
         "mqtt_updates_enabled": product_mqtt_updates_enabled(product),
         "status": status,
         "error": item_state.get("last_error"),
-        "url": item_state.get("url") or product.get("product_url"),
+        "url": None if no_offer else (item_state.get("url") or product.get("product_url")),
         "image_url": item_state.get("image_url"),
         "last_checked": item_state.get("last_checked_at"),
         "last_changed": item_state.get("last_changed_at"),
@@ -3246,6 +3268,7 @@ def update_state_for_product(product: Dict[str, Any], result: Optional[Dict[str,
                     "checked_at": entry["last_checked_at"],
                 }
         elif error and product_provider({}, product) in {"aez_pdf", "manual_pdf"} and is_no_offer_error(error):
+            was_no_offer = product_no_offer(previous)
             if previous.get("image_url"):
                 remove_generated_image_url(previous.get("image_url"))
             for match in previous.get("matches") or []:
@@ -3273,9 +3296,10 @@ def update_state_for_product(product: Dict[str, Any], result: Optional[Dict[str,
                 entry.pop(stale_key, None)
             entry["offer_status"] = "missing"
             entry["last_error"] = "Kein Angebot"
+            if not was_no_offer:
+                entry["last_changed_at"] = now_iso()
             if previous.get("price_cents") is not None:
                 entry["previous_price_cents"] = previous.get("price_cents")
-                entry["last_changed_at"] = now_iso()
         state["products"][product["id"]] = entry
         save_state(state)
     append_price_history(product, entry, result, error)

@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.3.4";
+const CARD_VERSION = "0.3.5";
 const CARD_TYPE = "preisermittlung-card";
 
 const DEFAULT_CONFIG = {
@@ -99,16 +99,18 @@ function entityToProduct(entityId, stateObj) {
   const providerName = attr.provider_name || attr.provider || "";
   const shop = attr.shop || "";
   const shopDetail = attr.shop_detail || "";
+  const noOffer = attr.available === false || attr.error === "Kein Angebot" || attr.status === "Kein Angebot";
   const rawTargetPrice = nullableNumber(attr.target_price);
   const rawTargetPriceCents = nullableNumber(attr.target_price_cents);
   const targetPriceCents = rawTargetPriceCents && rawTargetPriceCents > 0 ? rawTargetPriceCents : null;
   const targetPrice = targetPriceCents !== null
     ? (rawTargetPrice && rawTargetPrice > 0 ? rawTargetPrice : targetPriceCents / 100)
     : null;
-  const priceCents = nullableNumber(attr.price_cents);
+  const priceCents = noOffer ? null : nullableNumber(attr.price_cents);
   const belowTarget = typeof attr.below_target_price === "boolean"
-    ? attr.below_target_price && targetPriceCents !== null
+    ? attr.below_target_price && targetPriceCents !== null && !noOffer
     : (targetPriceCents !== null && priceCents !== null ? priceCents <= targetPriceCents : false);
+  const status = noOffer ? "Kein Angebot" : (attr.status || (stateObj.state === "unavailable" ? "unavailable" : "ok"));
   return {
     entityId,
     state: stateObj.state,
@@ -119,26 +121,27 @@ function entityToProduct(entityId, stateObj) {
     sourceType: attr.source_type || "",
     categoryId: attr.category_id || "",
     category: attr.category || attr.category_id || "Allgemein",
-    price: Number.parseFloat(String(stateObj.state).replace(",", ".")),
+    price: priceCents !== null ? priceCents / 100 : null,
     priceCents,
     targetPrice,
     targetPriceCents,
     targetPriceText: targetPriceCents !== null ? (attr.target_price_text || "") : "",
     belowTargetPrice: belowTarget,
-    unitPrice: attr.unit_price || "",
-    packageSize: attr.package_size || "",
-    imageUrl: attr.image_url || "",
-    pdfPage: attr.pdf_page || "",
-    pdfFile: attr.pdf_file || "",
+    unitPrice: noOffer ? "" : (attr.unit_price || ""),
+    packageSize: noOffer ? "" : (attr.package_size || ""),
+    imageUrl: noOffer ? "" : (attr.image_url || ""),
+    pdfPage: noOffer ? "" : (attr.pdf_page || ""),
+    pdfFile: noOffer ? "" : (attr.pdf_file || ""),
     articleNumber: attr.article_number || "",
     searchTerm: attr.search_term || "",
-    matches: Array.isArray(attr.extra_matches) ? attr.extra_matches : (Array.isArray(attr.matches) ? attr.matches : []),
-    matchCount: Number(attr.match_count || 0),
-    status: attr.status || (stateObj.state === "unavailable" ? "unavailable" : "ok"),
+    matches: noOffer ? [] : (Array.isArray(attr.extra_matches) ? attr.extra_matches : (Array.isArray(attr.matches) ? attr.matches : [])),
+    matchCount: noOffer ? 0 : Number(attr.match_count || 0),
+    status,
+    noOffer,
     lastChecked: attr.last_checked || "",
     lastChanged: attr.last_changed || "",
-    url: attr.url || "",
-    available: attr.available,
+    url: noOffer ? "" : (attr.url || ""),
+    available: noOffer ? false : attr.available,
   };
 }
 
@@ -156,6 +159,8 @@ function formatDate(value) {
 }
 
 function formatPrice(product) {
+  if (product.noOffer) return "Kein Angebot";
+  if (product.priceCents === null) return "-";
   if (!Number.isFinite(product.price)) return product.state || "-";
   return new Intl.NumberFormat("de-DE", {
     style: "currency",
@@ -175,6 +180,10 @@ function matchPriceCents(match) {
   if (Number.isFinite(Number(match.price_cents))) return Number(match.price_cents);
   if (Number.isFinite(Number(match.price))) return Math.round(Number(match.price) * 100);
   return null;
+}
+
+function statusClass(value) {
+  return String(value || "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "unknown";
 }
 
 function escapeHtml(value) {
@@ -381,9 +390,9 @@ class PreisermittlungCard extends HTMLElement {
     const prefix = this._config?.entity_prefix || DEFAULT_CONFIG.entity_prefix;
     const relevantKeys = [
       "name", "friendly_name", "article_number", "search_term", "provider", "provider_name", "shop", "shop_detail",
-      "market", "source_type", "category_id", "category", "price", "price_text", "unit_price", "package_size",
+      "market", "source_type", "category_id", "category", "price", "price_cents", "price_text", "unit_price", "package_size",
       "unit_price_text", "package_size_text", "target_price", "target_price_cents", "target_price_text", "below_target_price",
-      "image_url", "status", "error", "url",
+      "available", "image_url", "status", "error", "url",
       "last_checked", "last_changed", "match_count", "matches", "extra_matches", "pdf_page", "pdf_file",
     ];
     return JSON.stringify(
@@ -747,7 +756,7 @@ class PreisermittlungCard extends HTMLElement {
 
   _row(product, columns) {
     const rowClass = [
-      product.status === "error" ? "has-error" : "",
+      product.status === "error" || product.noOffer ? "has-error" : "",
       this._config.target_price_highlight_enabled && product.belowTargetPrice ? "is-target-price" : "",
     ].filter(Boolean).join(" ");
     return `
@@ -760,7 +769,7 @@ class PreisermittlungCard extends HTMLElement {
 
   _cell(product, column) {
     if (column === "image") return this._image(product);
-    if (column === "name") return `<div class="name">${escapeHtml(product.name)}</div>${product.url ? `<a class="link" href="${escapeHtml(this._productUrl(product))}" target="_blank" rel="noreferrer">${escapeHtml(this._linkLabel(product))}</a>` : ""}`;
+    if (column === "name") return `<div class="name">${escapeHtml(product.name)}</div>${product.url && !product.noOffer ? `<a class="link" href="${escapeHtml(this._productUrl(product))}" target="_blank" rel="noreferrer">${escapeHtml(this._linkLabel(product))}</a>` : ""}`;
     if (column === "provider") return escapeHtml(product.providerName || "-");
     if (column === "shop") return escapeHtml(product.shop || "-");
     if (column === "shop_detail") return escapeHtml(product.shopDetail || "-");
@@ -769,10 +778,10 @@ class PreisermittlungCard extends HTMLElement {
       return `<strong>${escapeHtml(formatPrice(product))}</strong>${badge ? `<br>${badge}` : ""}`;
     }
     if (column === "target_price") return this._targetPriceBadge(product, { standalone: true }) || "-";
-    if (column === "unit_price") return escapeHtml(product.unitPrice || "-");
-    if (column === "package_size") return escapeHtml(product.packageSize || "-");
+    if (column === "unit_price") return escapeHtml(product.noOffer ? "-" : (product.unitPrice || "-"));
+    if (column === "package_size") return escapeHtml(product.noOffer ? "-" : (product.packageSize || "-"));
     if (column === "category") return escapeHtml(product.category || "-");
-    if (column === "status") return `<span class="status status-${escapeHtml(product.status)}">${escapeHtml(product.status || "-")}</span>`;
+    if (column === "status") return `<span class="status status-${escapeHtml(statusClass(product.status))}">${escapeHtml(product.status || "-")}</span>`;
     if (column === "last_checked") return escapeHtml(formatDate(product.lastChecked));
     if (column === "last_changed") return escapeHtml(formatDate(product.lastChanged));
     return "";
@@ -821,7 +830,7 @@ class PreisermittlungCard extends HTMLElement {
   }
 
   _targetPriceBadge(product, options = {}) {
-    if (product.targetPriceCents === null) return "";
+    if (product.targetPriceCents === null || product.noOffer) return "";
     const reached = options.reached ?? product.belowTargetPrice;
     const mode = this._config.target_price_missed_display;
     if (!reached && mode === "hide") return "";
@@ -1206,7 +1215,7 @@ class PreisermittlungCard extends HTMLElement {
         font-weight: 650;
       }
       .status-ok { color: var(--success-color, #168039); }
-      .status-error, .has-error .col-price { color: var(--error-color, #db4437); }
+      .status-error, .status-kein-angebot, .has-error .col-price { color: var(--error-color, #db4437); }
       .is-target-price td {
         background: color-mix(in srgb, var(--success-color, #168039) 8%, transparent);
       }
