@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.34-dev"
+APP_VERSION = "0.1.35-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -2295,6 +2295,8 @@ def category_groups_from_config(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             "name": group.get("name") or group_id,
             "color": group.get("color") or "",
             "quick_group": group.get("quick_group") or "",
+            "quick_group_target": group.get("quick_group_target") or "",
+            "quick_group_grouped": group.get("quick_group_grouped") or "",
             "category_ids": category_ids,
         })
     return sorted(groups, key=lambda group: (group.get("name") or group["id"]).casefold())
@@ -2386,11 +2388,29 @@ def category_group_quick_enabled(group: Dict[str, Any]) -> bool:
     return raw in {"1", "true", "yes", "on", "ja"}
 
 
+def category_group_quick_target_enabled(group: Dict[str, Any]) -> bool:
+    raw = str(group.get("quick_group_target", "false")).strip().lower()
+    return raw in {"1", "true", "yes", "on", "ja"}
+
+
+def category_group_quick_grouped_enabled(group: Dict[str, Any]) -> bool:
+    raw = str(group.get("quick_group_grouped", "false")).strip().lower()
+    return raw in {"1", "true", "yes", "on", "ja"}
+
+
 def apply_category_group_options_from_form(group: Dict[str, Any]) -> None:
     if request.form.get("quick_group") == "true":
         group["quick_group"] = "true"
     else:
         group.pop("quick_group", None)
+    if request.form.get("quick_group_target") == "true":
+        group["quick_group_target"] = "true"
+    else:
+        group.pop("quick_group_target", None)
+    if request.form.get("quick_group_grouped") == "true":
+        group["quick_group_grouped"] = "true"
+    else:
+        group.pop("quick_group_grouped", None)
     if request.form.get("clear_group_color") == "true":
         group.pop("color", None)
     else:
@@ -2478,11 +2498,18 @@ def category_group_admin_row_html(group: Dict[str, Any], categories_by_id: Dict[
     if not chips:
         chips = '<span class="small">Keine Kategorien zugeordnet.</span>'
     group_chip = category_group_chip_html(group)
-    quick_label = " · Quick Group" if category_group_quick_enabled(group) else ""
+    labels = []
+    if category_group_quick_enabled(group):
+        labels.append("Quick Group")
+    if category_group_quick_target_enabled(group):
+        labels.append("Wunschpreis")
+    if category_group_quick_grouped_enabled(group):
+        labels.append("Gruppiert")
+    option_label = f" · {' · '.join(labels)}" if labels else ""
     return (
         '<div class="market-row">'
         f'<div><strong>{group_chip}</strong><br>'
-        f'<span class="small">ID {escape(group["id"])} · {len(group.get("category_ids", []))} Kategorien{quick_label}</span>'
+        f'<span class="small">ID {escape(group["id"])} · {len(group.get("category_ids", []))} Kategorien{option_label}</span>'
         f'<div class="quick-cats" style="margin-top: 6px">{chips}</div></div>'
         '<div class="row-actions">'
         f'<a class="button" href="/?categories_dialog=1&edit_category_group={escape(group["id"])}">Bearbeiten</a>'
@@ -3293,6 +3320,8 @@ def mqtt_state_payload(config: Dict[str, Any], product: Dict[str, Any]) -> Dict[
         "category_groups": [group.get("name") or group["id"] for group in product_category_groups],
         "category_group_colors": [category_group_color(group) or None for group in product_category_groups],
         "category_group_quick": [category_group_quick_enabled(group) for group in product_category_groups],
+        "category_group_quick_target": [category_group_quick_target_enabled(group) for group in product_category_groups],
+        "category_group_quick_grouped": [category_group_quick_grouped_enabled(group) for group in product_category_groups],
         "price": mqtt_price,
         "price_cents": price_cents,
         "price_text": format_cents(price_cents),
@@ -4381,7 +4410,14 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         if category_quick_enabled(category)
     )
     quick_group_links = "".join(
-        category_group_chip_html(group, "/?category_group=" + urllib.parse.quote(group["id"]))
+        category_group_chip_html(
+            group,
+            "/?" + urllib.parse.urlencode({
+                "category_group": group["id"],
+                **({"target": "hit"} if category_group_quick_target_enabled(group) else {}),
+                **({"view": "grouped"} if category_group_quick_grouped_enabled(group) else {}),
+            }),
+        )
         for group in category_groups
         if category_group_quick_enabled(group)
     )
@@ -4584,6 +4620,10 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '</div></div>'
             f'<label class="toggle-line"><input type="checkbox" name="quick_group" value="true" {"checked" if category_group_quick_enabled(edit_category_group) else ""}> Quick Group'
             f'{help_tip("Wenn aktiviert, erscheint diese Gruppe hinter den Quick Cats als schneller Filter auf der Startseite.")}</label>'
+            f'<label class="toggle-line"><input type="checkbox" name="quick_group_target" value="true" {"checked" if category_group_quick_target_enabled(edit_category_group) else ""}> Wunschpreis aktiviert'
+            f'{help_tip("Wenn aktiviert, öffnet der Quick-Group-Link die Gruppe direkt mit aktivem Wunschpreis-Filter.")}</label>'
+            f'<label class="toggle-line"><input type="checkbox" name="quick_group_grouped" value="true" {"checked" if category_group_quick_grouped_enabled(edit_category_group) else ""}> Gruppiert aktiviert'
+            f'{help_tip("Wenn aktiviert, öffnet der Quick-Group-Link die Gruppe direkt in der gruppierten Ansicht.")}</label>'
             '<label class="toggle-line"><input type="checkbox" name="clear_group_color" value="true"> Farbe auf Standard zurücksetzen'
             f'{help_tip("Entfernt die eigene Farbe dieser Gruppe und nutzt wieder die Standarddarstellung.")}</label>'
             '<div class="small" style="margin: 10px 0">Kategorien markieren, die zu dieser Gruppe gehören.</div>'
@@ -5453,6 +5493,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             <button class="primary" type="submit">{icon('plus')} Gruppe erstellen</button>
           </div>
           <label class="toggle-line" style="margin-top: 10px"><input type="checkbox" name="quick_group" value="true"> Quick Group{help_tip("Wenn aktiviert, erscheint diese Gruppe hinter den Quick Cats als schneller Filter auf der Startseite.")}</label>
+          <label class="toggle-line"><input type="checkbox" name="quick_group_target" value="true"> Wunschpreis aktiviert{help_tip("Wenn aktiviert, öffnet der Quick-Group-Link die Gruppe direkt mit aktivem Wunschpreis-Filter.")}</label>
+          <label class="toggle-line"><input type="checkbox" name="quick_group_grouped" value="true"> Gruppiert aktiviert{help_tip("Wenn aktiviert, öffnet der Quick-Group-Link die Gruppe direkt in der gruppierten Ansicht.")}</label>
           <div class="small" style="margin: 10px 0">Kategorien für die neue Gruppe auswählen.</div>
           <div class="category-choice-list">{group_category_checkboxes}</div>
         </form>

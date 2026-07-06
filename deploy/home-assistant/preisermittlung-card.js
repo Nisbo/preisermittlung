@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.3.9";
+const CARD_VERSION = "0.3.10";
 const CARD_TYPE = "preisermittlung-card";
 
 const DEFAULT_CONFIG = {
@@ -152,6 +152,8 @@ function entityToProduct(entityId, stateObj) {
     categoryGroups: Array.isArray(attr.category_groups) ? attr.category_groups : [],
     categoryGroupColors: Array.isArray(attr.category_group_colors) ? attr.category_group_colors : [],
     categoryGroupQuick: Array.isArray(attr.category_group_quick) ? attr.category_group_quick : [],
+    categoryGroupQuickTarget: Array.isArray(attr.category_group_quick_target) ? attr.category_group_quick_target : [],
+    categoryGroupQuickGrouped: Array.isArray(attr.category_group_quick_grouped) ? attr.category_group_quick_grouped : [],
     price: priceCents !== null ? priceCents / 100 : null,
     priceCents,
     targetPrice,
@@ -428,7 +430,7 @@ class PreisermittlungCard extends HTMLElement {
       "name", "friendly_name", "article_number", "search_term", "provider", "provider_name", "shop", "shop_detail",
       "market", "source_type", "category_id", "category", "price", "price_cents", "price_text", "unit_price", "package_size",
       "category_show_in_grouped", "category_searchable", "category_group_expanded", "category_group_ids", "category_groups",
-      "category_group_colors", "category_group_quick",
+      "category_group_colors", "category_group_quick", "category_group_quick_target", "category_group_quick_grouped",
       "unit_price_text", "package_size_text", "target_price", "target_price_cents", "target_price_text", "below_target_price",
       "available", "image_url", "status", "error", "url",
       "last_checked", "last_changed", "match_count", "matches", "extra_matches", "pdf_page", "pdf_file",
@@ -487,10 +489,19 @@ class PreisermittlungCard extends HTMLElement {
         const names = Array.isArray(attr.category_groups) ? attr.category_groups : [];
         const colors = Array.isArray(attr.category_group_colors) ? attr.category_group_colors : [];
         const quick = Array.isArray(attr.category_group_quick) ? attr.category_group_quick : [];
+        const quickTarget = Array.isArray(attr.category_group_quick_target) ? attr.category_group_quick_target : [];
+        const quickGrouped = Array.isArray(attr.category_group_quick_grouped) ? attr.category_group_quick_grouped : [];
         ids.forEach((rawId, index) => {
           const id = String(rawId || "");
           if (!id || groups.has(id)) return;
-          groups.set(id, { id, name: names[index] || id, color: colors[index] || "", quick: quick[index] === true });
+          groups.set(id, {
+            id,
+            name: names[index] || id,
+            color: colors[index] || "",
+            quick: quick[index] === true,
+            quickTarget: quickTarget[index] === true,
+            quickGrouped: quickGrouped[index] === true,
+          });
         });
       });
     return [...groups.values()]
