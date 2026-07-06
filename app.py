@@ -401,31 +401,41 @@ tr.is-target-price > td:first-child {
 .category-group-chip {
   display: inline-flex;
   align-items: center;
-  min-height: 24px;
-  border: 1px solid color-mix(in srgb, var(--category-color, var(--accent)) 42%, var(--line));
+  min-height: 22px;
+  border: 1px solid var(--line);
   border-radius: 999px;
   overflow: hidden;
-  color: var(--fg);
-  background: color-mix(in srgb, var(--category-color, var(--accent)) 12%, transparent);
+  color: var(--muted);
+  background: transparent;
   text-decoration: none;
   font-size: 12px;
 }
 .category-group-chip:hover {
-  border-color: color-mix(in srgb, var(--category-color, var(--accent)) 68%, var(--muted));
+  color: var(--fg);
+  border-color: var(--muted);
+}
+.category-group-chip.has-color {
+  border-color: color-mix(in srgb, var(--category-color) 55%, var(--line));
+  background: color-mix(in srgb, var(--category-color) 14%, transparent);
+  color: var(--fg);
 }
 .category-group-chip-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   align-self: stretch;
-  min-width: 25px;
-  padding: 0 7px;
-  background: color-mix(in srgb, var(--category-color, var(--accent)) 34%, var(--line));
-  color: var(--fg);
+  min-width: 23px;
+  padding: 0 6px;
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+  color: var(--muted);
   font-weight: 800;
 }
+.category-group-chip.has-color .category-group-chip-mark {
+  background: color-mix(in srgb, var(--category-color) 34%, var(--line));
+  color: var(--fg);
+}
 .category-group-chip-label {
-  padding: 0 8px;
+  padding: 0 7px;
 }
 .help-tip {
   display: inline-flex;
@@ -495,9 +505,9 @@ tr.is-target-price > td:first-child {
 }
 .id-reveal:hover .id-tooltip,
 .id-reveal.is-open .id-tooltip { display: block; }
-.category-section { margin-top: 16px; }
-.category-section:has(> details:not([open])) + .category-section:has(> details:not([open])) {
-  margin-top: 8px;
+.category-section { margin-top: 12px; }
+.category-section:has(> details:not([open])) + .category-section {
+  margin-top: 4px;
 }
 .category-section h2 { margin: 0 0 8px; }
 .category-section details {
@@ -2352,10 +2362,11 @@ def category_group_chip_html(group: Dict[str, Any], href: str = "") -> str:
     label = escape(group.get("name") or group["id"])
     color = category_group_color(group)
     style = f' style="--category-color: {escape(color)}"' if color else ""
+    color_class = " has-color" if color else ""
     tag = "a" if href else "span"
     href_attr = f' href="{escape(href)}"' if href else ""
     return (
-        f'<{tag} class="category-group-chip"{style}{href_attr}>'
+        f'<{tag} class="category-group-chip{color_class}"{style}{href_attr}>'
         '<span class="category-group-chip-mark">G</span>'
         f'<span class="category-group-chip-label">{label}</span>'
         f'</{tag}>'
