@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import io
+import logging
+from logging.handlers import RotatingFileHandler
 import re
 import resource
 import os
@@ -52,13 +54,30 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.29-dev"
+APP_VERSION = "0.1.30-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
+APP_LOG_PATH = Path(__file__).with_name("tmp").joinpath("app.log")
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 app = Flask(__name__)
+
+
+def configure_app_logging() -> None:
+    APP_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    target_path = str(APP_LOG_PATH.resolve())
+    for handler in app.logger.handlers:
+        if isinstance(handler, RotatingFileHandler) and getattr(handler, "baseFilename", "") == target_path:
+            return
+    file_handler = RotatingFileHandler(target_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    file_handler.setLevel(logging.INFO)
+    app.logger.addHandler(file_handler)
+    app.logger.setLevel(logging.INFO)
+
+
+configure_app_logging()
 
 state_lock = threading.Lock()
 history_lock = threading.Lock()
@@ -1047,6 +1066,99 @@ body[data-theme="dark"] .visual-price-map {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
 }
+.log-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 160px 140px 110px auto auto;
+  gap: 10px;
+  align-items: end;
+}
+.log-toolbar label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.log-toolbar .toggle-line {
+  align-self: center;
+  margin-top: 20px;
+}
+.log-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+.log-list {
+  display: grid;
+  gap: 8px;
+  max-height: 620px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.log-source-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent) 8%);
+  color: var(--fg);
+  font-weight: 750;
+}
+.log-entry {
+  display: grid;
+  grid-template-columns: 150px 118px 92px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--panel);
+}
+.log-entry .log-time,
+.log-entry .log-source {
+  color: var(--muted);
+  font-size: 12px;
+}
+.log-level {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  background: color-mix(in srgb, var(--muted) 12%, var(--panel));
+  color: var(--muted);
+}
+.log-entry.level-error .log-level,
+.log-entry.level-critical .log-level,
+.log-entry.level-failed .log-level {
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--accent);
+}
+.log-entry.level-warning .log-level {
+  background: color-mix(in srgb, var(--warn) 16%, var(--panel));
+  color: var(--warn);
+}
+.log-entry.level-info .log-level {
+  background: color-mix(in srgb, var(--ok) 10%, var(--panel));
+  color: var(--ok);
+}
+.log-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.log-empty {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 18px;
+  color: var(--muted);
+  text-align: center;
+}
 .settings-card .field:last-child {
   margin-bottom: 0;
 }
@@ -1151,7 +1263,7 @@ body[data-theme="dark"] .visual-price-map {
   .header-meta-row { grid-template-columns: 1fr; gap: 0; }
   .header-meta-row > span:first-child { min-width: 0; white-space: normal; }
   .summary { grid-template-columns: 1fr 1fr; }
-  .grid, .settings-grid, .inline-setting, .file-upload-row, .add-product-shared, .add-product-paths { grid-template-columns: 1fr; }
+  .grid, .settings-grid, .inline-setting, .file-upload-row, .add-product-shared, .add-product-paths, .log-toolbar, .log-entry, .log-summary { grid-template-columns: 1fr; }
   table, thead, tbody, tr, th, td { display: block; }
   thead { display: none; }
   tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
@@ -2393,6 +2505,118 @@ def update_service_status() -> Dict[str, Any]:
     except (OSError, subprocess.SubprocessError) as exc:
         status["state"] = f"Status konnte nicht gelesen werden: {exc}"
     return status
+
+
+LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL", "FAILED"}
+
+
+def normalize_log_level(value: Any) -> str:
+    text = str(value or "INFO").strip().upper()
+    if text == "WARN":
+        return "WARNING"
+    return text if text in LOG_LEVELS else "INFO"
+
+
+def read_log_file_lines(path: Path, max_lines: int = 250) -> List[str]:
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return []
+    return [line.rstrip("\n") for line in lines[-max_lines:]]
+
+
+def parse_log_line(line: str, source: str) -> Dict[str, Any]:
+    text = str(line or "")
+    timestamp = ""
+    level = "INFO"
+    message = text
+    match = re.match(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[,.]\d+)?(?:[+-]\d{2}:?\d{2})?)\s+([A-Z]+)\s+(.*)$", text)
+    if match:
+        timestamp, level, message = match.groups()
+    else:
+        journal_match = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2})?)\s+\S+\s+(.*)$", text)
+        if journal_match:
+            timestamp, message = journal_match.groups()
+        level_match = re.search(r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FAILED)\b", text, flags=re.I)
+        if level_match:
+            level = level_match.group(1).upper()
+    return {
+        "time": timestamp,
+        "source": source,
+        "level": normalize_log_level(level),
+        "message": message.strip() or text.strip(),
+        "raw": text,
+    }
+
+
+def read_journal_entries(unit: str, source: str, max_lines: int = 120) -> List[Dict[str, Any]]:
+    if not shutil.which("journalctl"):
+        return [{
+            "time": "",
+            "source": source,
+            "level": "WARNING",
+            "message": "journalctl ist auf diesem System nicht verfügbar.",
+            "raw": "",
+        }]
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", unit, "-n", str(max(20, min(max_lines, 500))), "--no-pager", "-o", "short-iso"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=6,
+        )
+    except Exception as exc:
+        return [{
+            "time": "",
+            "source": source,
+            "level": "ERROR",
+            "message": f"Journal konnte nicht gelesen werden: {exc}",
+            "raw": "",
+        }]
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or f"journalctl Exit-Code {result.returncode}").strip()
+        return [{
+            "time": "",
+            "source": source,
+            "level": "ERROR",
+            "message": message,
+            "raw": message,
+        }]
+    return [parse_log_line(line, source) for line in (result.stdout or "").splitlines() if line.strip()]
+
+
+def collect_log_entries(source: str = "all", limit: int = 250) -> Dict[str, Any]:
+    limit = max(20, min(int(limit or 250), 1000))
+    source = str(source or "all").strip().lower()
+    entries: List[Dict[str, Any]] = []
+    source_labels = {
+        "app_file": "App-Dateilog",
+        "update_file": "Update-Log",
+        "app_journal": "App-Journal",
+        "update_journal": "Update-Journal",
+    }
+    if source in {"all", "app_file"}:
+        entries.extend(parse_log_line(line, "app_file") for line in read_log_file_lines(APP_LOG_PATH, limit))
+    if source in {"all", "update_file"}:
+        entries.extend(parse_log_line(line, "update_file") for line in read_log_file_lines(UPDATE_LOG_PATH, limit))
+    if source in {"all", "app_journal"}:
+        entries.extend(read_journal_entries(SERVICE_NAME, "app_journal", min(limit, 250)))
+    if source in {"all", "update_journal"}:
+        entries.extend(read_journal_entries(update_service_unit(), "update_journal", min(limit, 250)))
+    return {
+        "entries": entries[-limit:],
+        "sources": source_labels,
+        "files": {
+            "app_file": str(APP_LOG_PATH),
+            "update_file": str(UPDATE_LOG_PATH),
+            "app_journal": f"journalctl -u {SERVICE_NAME}",
+            "update_journal": f"journalctl -u {update_service_unit()}",
+        },
+    }
 
 
 def start_update_service() -> Dict[str, Any]:
@@ -5060,7 +5284,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     extra_matches_mode = pdf_extra_matches_display_mode(config)
     extra_matches_open = pdf_extra_matches_expanded(config)
     home_view = default_home_view(config)
-    valid_settings_tabs = ["info", "home", "queries", "pdfs", "api", "browser", "mqtt", "backup", "updates"]
+    valid_settings_tabs = ["info", "home", "queries", "pdfs", "api", "browser", "mqtt", "backup", "updates", "logs"]
     active_settings_tab = request.args.get("tab", "").strip().lower()
     if active_settings_tab not in valid_settings_tabs:
         active_settings_tab = "mqtt" if request.args.get("mqtt_product") else "info"
@@ -5281,6 +5505,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
       <a class="settings-tab {'is-active' if active_settings_tab == 'mqtt' else ''}" href="/settings?tab=mqtt" data-settings-tab="mqtt">MQTT</a>
       <a class="settings-tab {'is-active' if active_settings_tab == 'backup' else ''}" href="/settings?tab=backup" data-settings-tab="backup">Backup</a>
       <a class="settings-tab {'is-active' if active_settings_tab == 'updates' else ''}" href="/settings?tab=updates" data-settings-tab="updates">Update</a>
+      <a class="settings-tab {'is-active' if active_settings_tab == 'logs' else ''}" href="/settings?tab=logs" data-settings-tab="logs">Logs</a>
     </nav>
     <section class="panel" data-settings-panel="info" {'hidden' if active_settings_tab != 'info' else ''}>
       <h2>Info</h2>
@@ -5709,6 +5934,57 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         </div>
       </div>
     </section>
+    <section class="panel" data-settings-panel="logs" {'hidden' if active_settings_tab != 'logs' else ''}>
+      <h2>Logs</h2>
+      <div class="settings-card settings-card-full">
+        <h3>Loganzeige</h3>
+        <div class="small">Die App schreibt eigene Meldungen nach <code>{escape(str(APP_LOG_PATH))}</code>. Update-Ausgaben liegen in <code>{escape(str(UPDATE_LOG_PATH))}</code>. Unter Debian kommen zusätzlich die systemd-Journale von <code>{escape(SERVICE_NAME)}</code> und <code>{escape(update_service_unit())}</code> dazu, sofern der Dienst sie lesen darf.</div>
+        <div class="log-toolbar" style="margin-top: 12px">
+          <label>Suche
+            <input type="search" data-log-query placeholder="Suchwort, Fehlertext, Artikel...">
+          </label>
+          <label>Quelle
+            <select data-log-source>
+              <option value="all">Alle Quellen</option>
+              <option value="app_file">App-Dateilog</option>
+              <option value="update_file">Update-Log</option>
+              <option value="app_journal">App-Journal</option>
+              <option value="update_journal">Update-Journal</option>
+            </select>
+          </label>
+          <label>Level
+            <select data-log-level>
+              <option value="all">Alle Level</option>
+              <option value="ERROR">Error</option>
+              <option value="WARNING">Warning</option>
+              <option value="INFO">Info</option>
+              <option value="DEBUG">Debug</option>
+            </select>
+          </label>
+          <label>Anzahl
+            <select data-log-limit>
+              <option value="100">100</option>
+              <option value="250" selected>250</option>
+              <option value="500">500</option>
+              <option value="1000">1000</option>
+            </select>
+          </label>
+          <label class="toggle-line"><input type="checkbox" data-log-group checked> Gruppieren</label>
+          <label class="toggle-line"><input type="checkbox" data-log-live> Live</label>
+          <button type="button" data-log-refresh>{icon('refresh')} Aktualisieren</button>
+        </div>
+        <div class="log-summary">
+          <div class="metric"><span>Einträge</span><strong data-log-stat="total">-</strong></div>
+          <div class="metric"><span>Fehler</span><strong data-log-stat="errors">-</strong></div>
+          <div class="metric"><span>Warnungen</span><strong data-log-stat="warnings">-</strong></div>
+          <div class="metric"><span>Aktualisiert</span><strong data-log-stat="updated">-</strong></div>
+        </div>
+        <div class="small" data-log-files></div>
+        <div class="log-list" data-log-list style="margin-top: 12px">
+          <div class="log-empty">Logs werden geladen...</div>
+        </div>
+      </div>
+    </section>
     <footer class="app-footer"><span>{escape(APP_NAME)}</span><span>v{escape(APP_VERSION)}</span></footer>
   </main>
   <script>
@@ -5928,6 +6204,108 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
       pollUpdateStatus();
     }}
 
+    let logPollTimer = null;
+    const logSourceLabels = {{
+      app_file: 'App-Dateilog',
+      update_file: 'Update-Log',
+      app_journal: 'App-Journal',
+      update_journal: 'Update-Journal',
+    }};
+    function escapeClientHtml(value) {{
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }}
+    function logLevelClass(level) {{
+      return String(level || 'INFO').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+    }}
+    function renderLogs(data) {{
+      const list = document.querySelector('[data-log-list]');
+      if (!list) return;
+      const entries = data.entries || [];
+      const grouped = !!document.querySelector('[data-log-group]')?.checked;
+      const total = entries.length;
+      const errors = entries.filter((entry) => ['ERROR', 'CRITICAL', 'FAILED'].includes(String(entry.level || '').toUpperCase())).length;
+      const warnings = entries.filter((entry) => String(entry.level || '').toUpperCase() === 'WARNING').length;
+      document.querySelector('[data-log-stat="total"]').textContent = total;
+      document.querySelector('[data-log-stat="errors"]').textContent = errors;
+      document.querySelector('[data-log-stat="warnings"]').textContent = warnings;
+      document.querySelector('[data-log-stat="updated"]').textContent = new Date().toLocaleTimeString('de-DE', {{hour:'2-digit', minute:'2-digit', second:'2-digit'}});
+      const files = data.files || {{}};
+      const fileNode = document.querySelector('[data-log-files]');
+      if (fileNode) {{
+        fileNode.innerHTML = Object.entries(files).map(([key, value]) => `<code>${{escapeClientHtml(logSourceLabels[key] || key)}}: ${{escapeClientHtml(value)}}</code>`).join(' · ');
+      }}
+      if (!entries.length) {{
+        list.innerHTML = '<div class="log-empty">Keine Logeinträge für diesen Filter.</div>';
+        return;
+      }}
+      let lastSource = '';
+      const html = entries.map((entry) => {{
+        const source = entry.source || 'unknown';
+        const groupHeader = grouped && source !== lastSource
+          ? `<div class="log-source-group">${{escapeClientHtml(logSourceLabels[source] || source)}}</div>`
+          : '';
+        lastSource = source;
+        const level = String(entry.level || 'INFO').toUpperCase();
+        return `${{groupHeader}}<article class="log-entry level-${{logLevelClass(level)}}">
+          <div class="log-time">${{escapeClientHtml(entry.time || '-')}}</div>
+          <div class="log-source">${{escapeClientHtml(logSourceLabels[source] || source)}}</div>
+          <div><span class="log-level">${{escapeClientHtml(level)}}</span></div>
+          <div class="log-message">${{escapeClientHtml(entry.message || entry.raw || '')}}</div>
+        </article>`;
+      }}).join('');
+      list.innerHTML = html;
+    }}
+    async function loadLogs() {{
+      const list = document.querySelector('[data-log-list]');
+      if (!list) return;
+      const params = new URLSearchParams();
+      params.set('source', document.querySelector('[data-log-source]')?.value || 'all');
+      params.set('level', document.querySelector('[data-log-level]')?.value || 'all');
+      params.set('q', document.querySelector('[data-log-query]')?.value || '');
+      params.set('limit', document.querySelector('[data-log-limit]')?.value || '250');
+      try {{
+        const response = await fetch('/api/logs?' + params.toString(), {{cache: 'no-store'}});
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || 'Logs konnten nicht geladen werden.');
+        renderLogs(data);
+      }} catch (error) {{
+        list.innerHTML = `<div class="error">Logs konnten nicht geladen werden: ${{escapeClientHtml(error.message || error)}}</div>`;
+      }}
+    }}
+    function scheduleLogPolling() {{
+      if (logPollTimer) {{
+        window.clearTimeout(logPollTimer);
+        logPollTimer = null;
+      }}
+      if (document.querySelector('[data-log-live]')?.checked) {{
+        logPollTimer = window.setTimeout(async () => {{
+          await loadLogs();
+          scheduleLogPolling();
+        }}, 2500);
+      }}
+    }}
+    document.querySelector('[data-log-refresh]')?.addEventListener('click', loadLogs);
+    document.querySelectorAll('[data-log-source], [data-log-level], [data-log-limit], [data-log-group], [data-log-live]').forEach((input) => {{
+      input.addEventListener('change', () => {{
+        loadLogs();
+        scheduleLogPolling();
+      }});
+    }});
+    let logSearchTimer = null;
+    document.querySelector('[data-log-query]')?.addEventListener('input', () => {{
+      window.clearTimeout(logSearchTimer);
+      logSearchTimer = window.setTimeout(loadLogs, 250);
+    }});
+    if (new URLSearchParams(window.location.search).get('tab') === 'logs') {{
+      loadLogs();
+      scheduleLogPolling();
+    }}
+
     const userAgentInput = document.getElementById('user-agent-input');
     document.getElementById('use-current-user-agent')?.addEventListener('click', () => {{
       userAgentInput.value = navigator.userAgent || '';
@@ -6095,6 +6473,10 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
       settingsPanels.forEach((panel) => {{
         panel.hidden = panel.dataset.settingsPanel !== name;
       }});
+      if (name === 'logs') {{
+        loadLogs();
+        scheduleLogPolling();
+      }}
     }};
     const settingsParams = new URLSearchParams(location.search);
     const initialSettingsTab = settingsParams.get('tab') || (location.hash ? location.hash.slice(1) : '') || (settingsParams.has('mqtt_product') ? 'mqtt' : 'info');
@@ -6617,6 +6999,38 @@ def api_product_history(product_id: str) -> Response:
 @app.get("/api/update-status")
 def api_update_status() -> Response:
     return jsonify(update_service_status())
+
+
+@app.get("/api/logs")
+def api_logs() -> Response:
+    source = request.args.get("source", "all")
+    level = request.args.get("level", "all").strip().upper()
+    query = request.args.get("q", "").strip().lower()
+    try:
+        limit = int(request.args.get("limit", "250") or 250)
+    except ValueError:
+        limit = 250
+    try:
+        data = collect_log_entries(source, limit)
+        entries = data["entries"]
+        if level and level != "ALL":
+            entries = [entry for entry in entries if normalize_log_level(entry.get("level")) == normalize_log_level(level)]
+        if query:
+            entries = [
+                entry
+                for entry in entries
+                if query in " ".join(str(entry.get(key) or "") for key in ("time", "source", "level", "message", "raw")).lower()
+            ]
+        return jsonify({
+            "ok": True,
+            "entries": entries,
+            "sources": data["sources"],
+            "files": data["files"],
+            "generated_at": now_iso(),
+        })
+    except Exception as exc:
+        app.logger.exception("Log API failed")
+        return jsonify({"ok": False, "error": str(exc), "entries": []}), 500
 
 
 @app.get("/generated/<path:filename>")
