@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.30-dev"
+APP_VERSION = "0.1.31-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -1039,6 +1039,14 @@ body[data-theme="dark"] .visual-price-map {
   border-radius: 8px;
   padding: 12px;
   background: color-mix(in srgb, var(--panel) 96%, var(--accent) 4%);
+}
+.settings-card pre {
+  overflow: auto;
+  margin: 8px 0;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 92%, var(--fg) 8%);
 }
 .soft-panel {
   border: 1px solid var(--line);
@@ -2579,6 +2587,14 @@ def read_journal_entries(unit: str, source: str, max_lines: int = 120) -> List[D
         }]
     if result.returncode != 0:
         message = (result.stderr or result.stdout or f"journalctl Exit-Code {result.returncode}").strip()
+        if "insufficient permissions" in message.lower() or "not seeing messages" in message.lower():
+            message = (
+                "Die App darf das systemd-Journal noch nicht lesen. "
+                "Melde dich per SSH als root an und führe aus: "
+                "usermod -aG systemd-journal www-data && systemctl restart preisermittlung. "
+                "Danach die Logs-Seite neu laden. Rückgängig: "
+                "gpasswd -d www-data systemd-journal && systemctl restart preisermittlung."
+            )
         return [{
             "time": "",
             "source": source,
@@ -5982,6 +5998,36 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         <div class="small" data-log-files></div>
         <div class="log-list" data-log-list style="margin-top: 12px">
           <div class="log-empty">Logs werden geladen...</div>
+        </div>
+        <div class="settings-grid align-start" style="margin-top: 14px">
+          <div class="settings-card">
+            <h3>Welche Logs gibt es?</h3>
+            <div class="small"><strong>App-Dateilog:</strong> Eigene Meldungen der Preisermittlung-App, z. B. interne Warnungen, MQTT-Publish-Fehler, Backup-Fehler oder technische Fehler beim Lesen/Löschen von Dateien. Wenn nichts passiert ist, kann diese Quelle leer sein.</div>
+            <div class="small" style="margin-top: 8px"><strong>Update-Log:</strong> Ausgabe des letzten Serverupdates aus der GUI. Dort sieht man Git-Pull, Python-Abhängigkeiten, Playwright, nginx-Test und Neustart des Dienstes.</div>
+            <div class="small" style="margin-top: 8px"><strong>App-Journal:</strong> systemd-Ausgaben des laufenden App-Dienstes, z. B. Start/Stop von Gunicorn, Tracebacks, stdout/stderr und Neustarts.</div>
+            <div class="small" style="margin-top: 8px"><strong>Update-Journal:</strong> systemd-Ausgaben des Update-Dienstes, also Start, Ende und Fehler des Serverupdate-Jobs.</div>
+          </div>
+          <div class="settings-card">
+            <h3>Bleiben die Logs erhalten?</h3>
+            <div class="small"><strong>App-Dateilog:</strong> bleibt nach einem Neustart erhalten, rotiert aber automatisch. Aktuell ca. 1 MB plus 3 ältere Dateien.</div>
+            <div class="small" style="margin-top: 8px"><strong>Update-Log:</strong> bleibt nach einem Neustart erhalten, wird beim nächsten GUI-Serverupdate neu geschrieben.</div>
+            <div class="small" style="margin-top: 8px"><strong>systemd-Journale:</strong> werden vom Betriebssystem verwaltet. Wie lange sie bleiben, hängt von der Debian/systemd-Konfiguration ab.</div>
+          </div>
+          <div class="settings-card settings-card-full">
+            <h3>Journal-Rechte freischalten</h3>
+            <div class="small">Wenn bei App-Journal oder Update-Journal eine Meldung wie <code>No journal files were opened due to insufficient permissions</code> erscheint, darf der Linux-Benutzer der App das Journal nicht lesen. Die App läuft normalerweise als <code>www-data</code>.</div>
+            <div class="small" style="margin-top: 8px">Als root per SSH ausführen:</div>
+            <pre><code>usermod -aG systemd-journal www-data
+systemctl restart preisermittlung</code></pre>
+            <div class="small">Danach die Logs-Seite neu laden. Falls es auf deinem Debian statt <code>systemd-journal</code> die Gruppe <code>adm</code> braucht, geht alternativ:</div>
+            <pre><code>usermod -aG adm www-data
+systemctl restart preisermittlung</code></pre>
+            <div class="small">Rückgängig machen:</div>
+            <pre><code>gpasswd -d www-data systemd-journal
+gpasswd -d www-data adm
+systemctl restart preisermittlung</code></pre>
+            <div class="small">Das ist optional. Ohne diese Rechte funktionieren App-Dateilog und Update-Log weiterhin, nur die systemd-Journale bleiben in der Weboberfläche gesperrt.</div>
+          </div>
         </div>
       </div>
     </section>
