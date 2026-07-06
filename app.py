@@ -52,7 +52,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.28-dev"
+APP_VERSION = "0.1.29-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -2787,6 +2787,7 @@ def mqtt_state_payload(config: Dict[str, Any], product: Dict[str, Any]) -> Dict[
     target_cents = product_target_price_cents(product)
     status = "disabled" if not product_enabled(product) else ("error" if item_state.get("last_error") else "ok")
     no_offer = product_no_offer(item_state)
+    mqtt_price = 0 if no_offer else (round(int(price_cents) / 100, 2) if price_cents is not None else None)
     payload = {
         "id": product.get("id"),
         "name": product_display_name(product, item_state),
@@ -2801,7 +2802,7 @@ def mqtt_state_payload(config: Dict[str, Any], product: Dict[str, Any]) -> Dict[
         "market": market_text,
         "category_id": product_category_id(product),
         "category": category.get("name") or DEFAULT_CATEGORY_NAME,
-        "price": round(int(price_cents) / 100, 2) if price_cents is not None else None,
+        "price": mqtt_price,
         "price_cents": price_cents,
         "price_text": format_cents(price_cents),
         "currency": item_state.get("currency") or "EUR",
