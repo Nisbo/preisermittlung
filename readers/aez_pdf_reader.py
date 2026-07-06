@@ -500,7 +500,20 @@ def parse_pdf_context(pdf_url: str, pdf_path: Path, loaded_at: Optional[float] =
 
 
 def current_pdf_context() -> Dict[str, Any]:
-    return pdf_context_for_url(current_pdf_url())
+    pdf_url = canonical_pdf_url(current_pdf_url())
+    current_key = f"context:{pdf_url}"
+    for key in list(PDF_CONTEXT_CACHE):
+        if key != current_key:
+            PDF_CONTEXT_CACHE.pop(key, None)
+    current_pdf_path = cached_pdf_path(pdf_url)
+    if PDF_CACHE_DIR.exists():
+        for pdf_path in PDF_CACHE_DIR.glob("*.pdf"):
+            if pdf_path != current_pdf_path:
+                try:
+                    pdf_path.unlink()
+                except OSError:
+                    pass
+    return pdf_context_for_url(pdf_url)
 
 
 def pdf_context_for_url(pdf_url: str) -> Dict[str, Any]:

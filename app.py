@@ -52,7 +52,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.25-dev"
+APP_VERSION = "0.1.26-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -169,6 +169,11 @@ button[disabled] {
   opacity: .65;
   cursor: progress;
 }
+a.button.is-disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 button.inline-form-button { width: 100%; }
 button.primary, a.button.primary { background: var(--accent-button); color: white; border-color: var(--accent-button); }
 button.danger { color: #b00020; border-color: #efc2c8; }
@@ -250,6 +255,17 @@ tr:last-child td { border-bottom: 0; }
   align-items: center;
   gap: 6px;
 }
+.price-icon {
+  width: 26px;
+  min-height: 26px;
+  padding: 0;
+  color: var(--muted);
+}
+.price-icon.is-active {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+}
+.price-icon svg { width: 14px; height: 14px; }
 .history-button {
   width: 26px;
   min-height: 26px;
@@ -1374,10 +1390,11 @@ function renderHistoryTable(container, data) {
   const rows = data.rows || [];
   const body = rows.map((item) => {
     const error = item.ok ? '' : (item.error || 'Fehler');
+    const status = error === 'Kein Angebot' ? 'Kein Angebot' : (item.ok ? 'OK' : 'Fehler');
     return `<tr class="${item.ok ? '' : 'history-row-error'}">
       <td>${formatHistoryTime(item.checked_at)}</td>
       <td>${item.ok ? centsToText(item.price_cents) : '-'}</td>
-      <td>${item.ok ? 'OK' : 'Fehler'}</td>
+      <td>${status}</td>
       <td>${error}</td>
     </tr>`;
   }).join('');
@@ -1545,7 +1562,12 @@ document.querySelectorAll('form').forEach((form) => {
         button.disabled = true;
         button.textContent = 'Bitte warten...';
       }
-      fetch(form.action, {method: form.method || 'POST'})
+      fetch(form.action, {
+        method: form.method || 'POST',
+        body: new FormData(form),
+        headers: {'Accept': 'application/json'},
+        cache: 'no-store',
+      })
         .then((response) => response.json())
         .then((data) => {
           if (status) status.textContent = data.message || (data.ok ? 'MQTT-Aktion ausgeführt.' : 'MQTT-Aktion fehlgeschlagen.');
@@ -1742,6 +1764,11 @@ def target_price_filter_enabled(config: Dict[str, Any]) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def mqtt_badge_enabled(config: Dict[str, Any]) -> bool:
+    raw = settings_value(config, "mqtt_badge_enabled", "false").strip().lower()
+    return raw in {"1", "true", "yes", "on", "ja"}
+
+
 def allow_iframe_embedding(config: Dict[str, Any]) -> bool:
     raw = settings_value(config, "allow_iframe_embedding", "false").strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -1756,11 +1783,22 @@ def product_below_target_price(product: Dict[str, Any]) -> bool:
     target_cents = product_target_price_cents(product)
     if target_cents is None:
         return False
+    if product_no_offer(product.get("state") or {}):
+        return False
     price_cents = (product.get("state") or {}).get("price_cents")
     try:
         return int(price_cents) <= target_cents
     except (TypeError, ValueError):
         return False
+
+
+def is_no_offer_error(error: Any) -> bool:
+    text = str(error or "").strip().lower()
+    return "kein treffer im pdf-prospekt" in text or text == "kein angebot"
+
+
+def product_no_offer(item_state: Dict[str, Any]) -> bool:
+    return str(item_state.get("offer_status") or "").lower() == "missing" or is_no_offer_error(item_state.get("last_error"))
 
 
 def target_price_badge_html(
@@ -1894,6 +1932,7 @@ def icon(name: str) -> str:
         "list": '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
         "target": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/>',
         "chart": '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/><circle cx="7" cy="15" r="1"/><circle cx="11" cy="11" r="1"/><circle cx="14" cy="14" r="1"/><circle cx="19" cy="7" r="1"/>',
+        "mqtt": '<path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/>',
         "image": '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
         "pdf": '<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/><path d="M8 13h1.5a1.5 1.5 0 0 0 0-3H8v7"/><path d="M13 10v7h1.5a2.5 2.5 0 0 0 0-5H13"/><path d="M18 10h3"/><path d="M18 13h2"/>',
         "settings": '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2 2 0 1 1-2.83 2.83l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.1 1.65V21a2 2 0 1 1-4 0v-.06a1.8 1.8 0 0 0-1.1-1.65 1.8 1.8 0 0 0-1.98.36l-.04.04a2 2 0 1 1-2.83-2.83l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.65-1.1H3a2 2 0 1 1 0-4h.06A1.8 1.8 0 0 0 4.7 8.8a1.8 1.8 0 0 0-.36-1.98l-.04-.04a2 2 0 1 1 2.83-2.83l.04.04A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1.1-1.65V3a2 2 0 1 1 4 0v.06A1.8 1.8 0 0 0 15.2 4.7a1.8 1.8 0 0 0 1.98-.36l.04-.04a2 2 0 1 1 2.83 2.83l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.1H21a2 2 0 1 1 0 4h-.06A1.8 1.8 0 0 0 19.4 15Z"/>',
@@ -2510,6 +2549,9 @@ def save_settings_from_form(config: Dict[str, Any]) -> Dict[str, Any]:
         settings["target_price_filter_enabled"] = (
             "true" if request.form.get("target_price_filter_enabled") == "true" else "false"
         )
+        settings["mqtt_badge_enabled"] = (
+            "true" if request.form.get("mqtt_badge_enabled") == "true" else "false"
+        )
         settings["target_price_highlight_enabled"] = (
             "true" if request.form.get("target_price_highlight_enabled") == "true" else "false"
         )
@@ -3030,6 +3072,7 @@ def history_timestamp_value(value: Any) -> float:
 
 
 def append_price_history(product: Dict[str, Any], entry: Dict[str, Any], result: Optional[Dict[str, Any]], error: Optional[str]) -> None:
+    history_error = "Kein Angebot" if is_no_offer_error(error) else str(error or "")
     record = {
         "checked_at": entry.get("last_checked_at") or now_iso(),
         "product_id": product.get("id"),
@@ -3042,7 +3085,7 @@ def append_price_history(product: Dict[str, Any], entry: Dict[str, Any], result:
         "price_cents": result.get("price_cents") if result else None,
         "price_text": result.get("price_text") if result else None,
         "currency": (result or entry).get("currency") or "EUR",
-        "error": str(error or ""),
+        "error": history_error,
     }
     with history_lock:
         PRICE_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -3191,6 +3234,7 @@ def update_state_for_product(product: Dict[str, Any], result: Optional[Dict[str,
             old_price = previous.get("price_cents")
             new_price = result.get("price_cents")
             entry.update(result)
+            entry.pop("offer_status", None)
             if old_price != new_price:
                 entry["previous_price_cents"] = old_price
                 entry["last_changed_at"] = now_iso()
@@ -3201,14 +3245,23 @@ def update_state_for_product(product: Dict[str, Any], result: Optional[Dict[str,
                     **browser_memory,
                     "checked_at": entry["last_checked_at"],
                 }
-        elif error and product.get("provider") == "manual_pdf":
+        elif error and product_provider({}, product) in {"aez_pdf", "manual_pdf"} and is_no_offer_error(error):
+            if previous.get("image_url"):
+                remove_generated_image_url(previous.get("image_url"))
+            for match in previous.get("matches") or []:
+                if isinstance(match, dict) and match.get("image_url"):
+                    remove_generated_image_url(match.get("image_url"))
             for stale_key in [
                 "price",
                 "price_cents",
                 "price_text",
+                "old_price_cents",
+                "old_price_text",
+                "previous_price_cents",
                 "unit_price",
                 "unit_price_text",
                 "package_size_text",
+                "url",
                 "image_url",
                 "matches",
                 "match_count",
@@ -3218,6 +3271,11 @@ def update_state_for_product(product: Dict[str, Any], result: Optional[Dict[str,
                 "provider_article_number",
             ]:
                 entry.pop(stale_key, None)
+            entry["offer_status"] = "missing"
+            entry["last_error"] = "Kein Angebot"
+            if previous.get("price_cents") is not None:
+                entry["previous_price_cents"] = previous.get("price_cents")
+                entry["last_changed_at"] = now_iso()
         state["products"][product["id"]] = entry
         save_state(state)
     append_price_history(product, entry, result, error)
@@ -3241,6 +3299,22 @@ def save_product_url_state(product: Dict[str, Any], url: str) -> None:
         )
         state["products"][product["id"]] = entry
         save_state(state)
+
+
+def remove_generated_image_url(image_url: Any) -> None:
+    parsed = urllib.parse.urlparse(str(image_url or ""))
+    if not parsed.path.startswith("/generated/"):
+        return
+    relative = parsed.path.removeprefix("/generated/").lstrip("/")
+    if not relative:
+        return
+    try:
+        target = GENERATED_PATH.joinpath(relative).resolve()
+        root = GENERATED_PATH.resolve()
+        if root in target.parents and target.suffix.lower() == ".png":
+            target.unlink(missing_ok=True)
+    except OSError:
+        app.logger.debug("Could not remove generated image %s", image_url, exc_info=True)
 
 
 def refresh_worker(
@@ -4140,14 +4214,19 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     for product in products:
         item_state = product["state"]
         last_error = item_state.get("last_error")
+        no_offer = product_no_offer(item_state)
         is_enabled = product_enabled(product)
         status = (
             "Deaktiviert"
             if not is_enabled
-            else ("Fehler" if last_error else ("OK" if item_state.get("last_checked_at") else "Noch nicht geladen"))
+            else (
+                "Kein Angebot"
+                if no_offer
+                else ("Fehler" if last_error else ("OK" if item_state.get("last_checked_at") else "Noch nicht geladen"))
+            )
         )
         status_html = escape(status)
-        if last_error:
+        if last_error and not no_offer:
             status_html += f'<br><span class="small">{escape(str(last_error))}</span>'
         provider = product_provider(config, product)
         product_market = market_for_selection(provider, product.get("market_id", ""), markets) or {}
@@ -4161,7 +4240,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             price_extra = f"<br><span class=\"small\">statt {escape(format_cents(item_state.get('old_price_cents')))}</span>"
         target_cents = product_target_price_cents(product)
         target_reached = product_below_target_price(product)
-        target_badge_html = target_price_badge_html(target_cents, target_reached, target_missed_mode)
+        target_badge_html = "" if no_offer else target_price_badge_html(target_cents, target_reached, target_missed_mode)
         target_badge = (
             f"<br>{target_badge_html}"
             if target_badge_html
@@ -4328,10 +4407,11 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '<h3>MQTT / Home Assistant</h3>'
             '<div class="small">Manueller Test für diesen Artikel. Diese Buttons ignorieren die Auto-Update-Einstellungen bewusst.</div>'
             f'{product_mqtt_notice_html}'
+            f'<div class="notice" id="mqtt-product-status-{escape(str(product.get("id", "")))}" style="margin-top: 10px" hidden></div>'
             '<div class="actions" style="margin-top: 10px">'
-            f'<form method="post" action="/products/{escape(product.get("id", ""))}/mqtt/discovery?return=dialog"><input type="hidden" name="return_to" value="{escape(request.full_path)}"><button type="submit">{icon("settings")} Discovery senden</button></form>'
-            f'<form method="post" action="/products/{escape(product.get("id", ""))}/mqtt/state?return=dialog"><input type="hidden" name="return_to" value="{escape(request.full_path)}"><button type="submit">{icon("refresh")} Status senden</button></form>'
-            f'<form method="post" action="/products/{escape(product.get("id", ""))}/mqtt/delete?return=dialog"><input type="hidden" name="return_to" value="{escape(request.full_path)}"><button class="danger" type="submit">{icon("trash")} Aus HA löschen</button></form>'
+            f'<form method="post" action="/products/{escape(product.get("id", ""))}/mqtt/discovery?return=json" data-ajax-form data-status-target="#mqtt-product-status-{escape(str(product.get("id", "")))}"><button type="submit">{icon("settings")} Discovery senden</button></form>'
+            f'<form method="post" action="/products/{escape(product.get("id", ""))}/mqtt/state?return=json" data-ajax-form data-status-target="#mqtt-product-status-{escape(str(product.get("id", "")))}"><button type="submit">{icon("refresh")} Status senden</button></form>'
+            f'<form method="post" action="/products/{escape(product.get("id", ""))}/mqtt/delete?return=json" data-ajax-form data-status-target="#mqtt-product-status-{escape(str(product.get("id", "")))}"><button class="danger" type="submit">{icon("trash")} Aus HA löschen</button></form>'
             '</div></div></section></div>'
         )
         delete_product_dialogs.append(
@@ -4363,12 +4443,19 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
                 ' · <span class="id-reveal">'
                 f'<button class="id-label" type="button" data-id-toggle>Kennung</button><span class="id-tooltip">{product_id}</span></span>'
             )
+        price_value_html = "-" if no_offer or item_state.get("price_cents") is None else escape(format_cents(item_state.get("price_cents")))
+        mqtt_badge = (
+            f'<span class="button price-icon is-active" title="MQTT Updates aktiv" aria-label="MQTT Updates aktiv">{icon("mqtt")}</span>'
+            if mqtt_badge_enabled(config) and product_mqtt_updates_enabled(product) and is_enabled
+            else ""
+        )
         price_html = (
             '<span class="price-cell-tools">'
-            f'<span>{escape(format_cents(item_state.get("price_cents")))}</span>'
-            f'<button class="button history-button" type="button" data-dialog-open="{escape(history_dialog_id)}" title="Preisverlauf" aria-label="Preisverlauf">{icon("chart")}</button>'
+            f'<span>{price_value_html}</span>'
+            f'<button class="button history-button price-icon" type="button" data-dialog-open="{escape(history_dialog_id)}" title="Preisverlauf" aria-label="Preisverlauf">{icon("chart")}</button>'
+            f'{mqtt_badge}'
             '</span>'
-            f'{price_extra}{target_badge}'
+            f'{price_extra if not no_offer else ""}{target_badge}'
         )
         row_html = (
             f"<tr id=\"product-{escape(product.get('id', ''))}\"{target_row_class}>"
@@ -4376,7 +4463,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             f"<div class=\"small\">{product_meta}</div>"
             f"{category_chip_html(category, '/?category=' + category_id)}{enabled_badge}</div></div></td>"
             f"<td data-label=\"Markt\" data-sort-value=\"{escape(product_provider_label + ' ' + product_market_sort)}\"><span class=\"small\"><strong>{escape(product_provider_label)}</strong>{product_market_display}</span></td>"
-            f"<td data-label=\"Preis\" class=\"price\" data-sort-value=\"{int(item_state.get('price_cents') or -1)}\">{price_html}</td>"
+            f"<td data-label=\"Preis\" class=\"price\" data-sort-value=\"{int(item_state.get('price_cents') if item_state.get('price_cents') is not None and not no_offer else -1)}\">{price_html}</td>"
             f"<td data-label=\"Grundpreis\">{unit_price_html(item_state)}</td>"
             f"<td data-label=\"Geprüft\" data-sort-value=\"{escape(str(item_state.get('last_checked_at') or ''))}\"><span class=\"small\">{escape(format_datetime_de(item_state.get('last_checked_at')))}</span></td>"
             f"<td data-label=\"Geändert\" data-sort-value=\"{escape(str(item_state.get('last_changed_at') or ''))}\"><span class=\"small\">{escape(format_datetime_de(item_state.get('last_changed_at')))}</span></td>"
@@ -4386,7 +4473,9 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             f"<button class=\"icon-only\" type=\"button\" data-dialog-open=\"{escape(move_dialog_id)}\" title=\"Artikel bearbeiten\" aria-label=\"Artikel bearbeiten\">{icon('settings')}</button>"
             + (
                 f"<a class=\"button icon-only\" href=\"{escape(pdf_page_url(item_state.get('url'), item_state.get('pdf_page')) if provider_kind(provider) == 'prospect' else str(item_state.get('url')))}\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Öffnen\" aria-label=\"Öffnen\">{icon('shop')}</a>"
-                if item_state.get("url")
+                if item_state.get("url") and not no_offer
+                else f"<a class=\"button icon-only is-disabled\" aria-disabled=\"true\" tabindex=\"-1\" title=\"Kein Link verfügbar\" aria-label=\"Kein Link verfügbar\">{icon('shop')}</a>"
+                if no_offer
                 else ""
             )
             + f"<button class=\"danger icon-only\" type=\"button\" data-dialog-open=\"{escape(delete_product_dialog_id)}\" title=\"Löschen\" aria-label=\"Löschen\">{icon('trash')}</button>"
@@ -5291,6 +5380,10 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           <div class="field" style="margin-top: 10px">
             <label class="toggle-line"><input type="checkbox" name="target_price_filter_enabled" value="true" {'checked' if target_price_filter_enabled(config) else ''}> Wunschpreis-Filter anzeigen</label>
             <div class="small">Zeigt in der Filterzeile einen Button, der nur Artikel mit erreichtem Wunschpreis anzeigt.</div>
+          </div>
+          <div class="field" style="margin-top: 10px">
+            <label class="toggle-line"><input type="checkbox" name="mqtt_badge_enabled" value="true" {'checked' if mqtt_badge_enabled(config) else ''}> MQTT-Kennzeichnung anzeigen</label>
+            <div class="small">Zeigt in der Preiszelle ein kleines Symbol, wenn MQTT Updates für den Artikel aktiv sind.</div>
           </div>
           </div>
           <div class="settings-card">
