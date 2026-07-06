@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.33-dev"
+APP_VERSION = "0.1.34-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -398,6 +398,35 @@ tr.is-target-price > td:first-child {
   background: color-mix(in srgb, var(--category-color) 14%, transparent);
   color: var(--fg);
 }
+.category-group-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid color-mix(in srgb, var(--category-color, var(--accent)) 42%, var(--line));
+  border-radius: 999px;
+  overflow: hidden;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--category-color, var(--accent)) 12%, transparent);
+  text-decoration: none;
+  font-size: 12px;
+}
+.category-group-chip:hover {
+  border-color: color-mix(in srgb, var(--category-color, var(--accent)) 68%, var(--muted));
+}
+.category-group-chip-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  min-width: 25px;
+  padding: 0 7px;
+  background: color-mix(in srgb, var(--category-color, var(--accent)) 34%, var(--line));
+  color: var(--fg);
+  font-weight: 800;
+}
+.category-group-chip-label {
+  padding: 0 8px;
+}
 .help-tip {
   display: inline-flex;
   align-items: center;
@@ -467,6 +496,9 @@ tr.is-target-price > td:first-child {
 .id-reveal:hover .id-tooltip,
 .id-reveal.is-open .id-tooltip { display: block; }
 .category-section { margin-top: 16px; }
+.category-section:has(> details:not([open])) + .category-section:has(> details:not([open])) {
+  margin-top: 8px;
+}
 .category-section h2 { margin: 0 0 8px; }
 .category-section details {
   display: grid;
@@ -2251,6 +2283,8 @@ def category_groups_from_config(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         groups.append({
             "id": group_id,
             "name": group.get("name") or group_id,
+            "color": group.get("color") or "",
+            "quick_group": group.get("quick_group") or "",
             "category_ids": category_ids,
         })
     return sorted(groups, key=lambda group: (group.get("name") or group["id"]).casefold())
@@ -2296,6 +2330,10 @@ def category_color(category: Dict[str, Any]) -> str:
     return normalize_hex_color(str(category.get("color") or ""))
 
 
+def category_group_color(group: Dict[str, Any]) -> str:
+    return normalize_hex_color(str(group.get("color") or ""))
+
+
 def category_lookup(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return {category["id"]: category for category in categories_from_config(config)}
 
@@ -2310,8 +2348,46 @@ def category_chip_html(category: Dict[str, Any], href: str = "") -> str:
     return f'<{tag} class="category-chip{color_class}"{style}{href_attr}>{label}</{tag}>'
 
 
+def category_group_chip_html(group: Dict[str, Any], href: str = "") -> str:
+    label = escape(group.get("name") or group["id"])
+    color = category_group_color(group)
+    style = f' style="--category-color: {escape(color)}"' if color else ""
+    tag = "a" if href else "span"
+    href_attr = f' href="{escape(href)}"' if href else ""
+    return (
+        f'<{tag} class="category-group-chip"{style}{href_attr}>'
+        '<span class="category-group-chip-mark">G</span>'
+        f'<span class="category-group-chip-label">{label}</span>'
+        f'</{tag}>'
+    )
+
+
 def category_color_from_form() -> str:
     return normalize_hex_color(request.form.get("color_text", ""))
+
+
+def category_group_color_from_form() -> str:
+    return normalize_hex_color(request.form.get("group_color_text", ""))
+
+
+def category_group_quick_enabled(group: Dict[str, Any]) -> bool:
+    raw = str(group.get("quick_group", "false")).strip().lower()
+    return raw in {"1", "true", "yes", "on", "ja"}
+
+
+def apply_category_group_options_from_form(group: Dict[str, Any]) -> None:
+    if request.form.get("quick_group") == "true":
+        group["quick_group"] = "true"
+    else:
+        group.pop("quick_group", None)
+    if request.form.get("clear_group_color") == "true":
+        group.pop("color", None)
+    else:
+        color = category_group_color_from_form()
+        if color:
+            group["color"] = color
+        else:
+            group.pop("color", None)
 
 
 def apply_category_options_from_form(category: Dict[str, Any]) -> None:
@@ -2390,10 +2466,12 @@ def category_group_admin_row_html(group: Dict[str, Any], categories_by_id: Dict[
     )
     if not chips:
         chips = '<span class="small">Keine Kategorien zugeordnet.</span>'
+    group_chip = category_group_chip_html(group)
+    quick_label = " · Quick Group" if category_group_quick_enabled(group) else ""
     return (
         '<div class="market-row">'
-        f'<div><strong>{escape(group.get("name") or group["id"])}</strong><br>'
-        f'<span class="small">ID {escape(group["id"])} · {len(group.get("category_ids", []))} Kategorien</span>'
+        f'<div><strong>{group_chip}</strong><br>'
+        f'<span class="small">ID {escape(group["id"])} · {len(group.get("category_ids", []))} Kategorien{quick_label}</span>'
         f'<div class="quick-cats" style="margin-top: 6px">{chips}</div></div>'
         '<div class="row-actions">'
         f'<a class="button" href="/?categories_dialog=1&edit_category_group={escape(group["id"])}">Bearbeiten</a>'
@@ -3202,6 +3280,8 @@ def mqtt_state_payload(config: Dict[str, Any], product: Dict[str, Any]) -> Dict[
         "category_group_expanded": category_group_expanded(category),
         "category_group_ids": [group["id"] for group in product_category_groups],
         "category_groups": [group.get("name") or group["id"] for group in product_category_groups],
+        "category_group_colors": [category_group_color(group) or None for group in product_category_groups],
+        "category_group_quick": [category_group_quick_enabled(group) for group in product_category_groups],
         "price": mqtt_price,
         "price_cents": price_cents,
         "price_text": format_cents(price_cents),
@@ -4289,7 +4369,13 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         for category in categories
         if category_quick_enabled(category)
     )
-    quick_category_html = f'<div class="quick-cats">{quick_category_links}</div>' if quick_category_links else ""
+    quick_group_links = "".join(
+        category_group_chip_html(group, "/?category_group=" + urllib.parse.quote(group["id"]))
+        for group in category_groups
+        if category_group_quick_enabled(group)
+    )
+    quick_links = quick_category_links + quick_group_links
+    quick_category_html = f'<div class="quick-cats">{quick_links}</div>' if quick_links else ""
     multi_category_enabled = multi_category_filter_enabled(config)
     multi_filter_link_params: Dict[str, Any] = {"categories_filter": "1"}
     if selected_multi_categories:
@@ -4481,6 +4567,14 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '</div>'
             f'<form method="post" action="/category-groups/{escape(edit_category_group["id"])}/update">'
             f'<div class="field"><label>Name</label><input name="name" value="{escape(edit_category_group.get("name") or "")}" required></div>'
+            '<div class="field" style="margin-top: 10px"><label>Farbe optional</label><div class="color-row">'
+            f'<input type="color" data-color-picker value="{escape(category_group_color(edit_category_group) or "#d0001f")}">'
+            f'<input name="group_color_text" data-color-text value="{escape(category_group_color(edit_category_group))}" placeholder="#d0001f" pattern="#?[0-9a-fA-F]{{6}}">'
+            '</div></div>'
+            f'<label class="toggle-line"><input type="checkbox" name="quick_group" value="true" {"checked" if category_group_quick_enabled(edit_category_group) else ""}> Quick Group'
+            f'{help_tip("Wenn aktiviert, erscheint diese Gruppe hinter den Quick Cats als schneller Filter auf der Startseite.")}</label>'
+            '<label class="toggle-line"><input type="checkbox" name="clear_group_color" value="true"> Farbe auf Standard zurücksetzen'
+            f'{help_tip("Entfernt die eigene Farbe dieser Gruppe und nutzt wieder die Standarddarstellung.")}</label>'
             '<div class="small" style="margin: 10px 0">Kategorien markieren, die zu dieser Gruppe gehören.</div>'
             f'<div class="category-choice-list">{edit_group_category_checkboxes}</div>'
             '<div class="small" style="margin-top: 10px">Nach Änderungen ggf. unter Settings &gt; MQTT „Status für alle“ senden, damit Home Assistant die Gruppenattribute aktualisiert.</div>'
@@ -5339,10 +5433,15 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         <h3>Kategoriegruppen</h3>
         <div class="small">Gruppen fassen mehrere Kategorien zusammen. Nach Änderungen bei Gruppen musst du für Home Assistant unter Settings &gt; MQTT „Status für alle“ senden oder auf die nächsten MQTT-Updates warten.</div>
         <form method="post" action="/category-groups" style="margin-top: 12px">
-          <div class="grid" style="grid-template-columns: 1fr auto">
+          <div class="grid" style="grid-template-columns: 1fr 1fr auto">
             <div class="field"><label>Neue Gruppe</label><input name="name" required placeholder="Lebensmittel"></div>
+            <div class="field"><label>Farbe optional</label><div class="color-row">
+              <input type="color" data-color-picker value="#d0001f">
+              <input name="group_color_text" data-color-text placeholder="#d0001f" pattern="#?[0-9a-fA-F]{{6}}">
+            </div></div>
             <button class="primary" type="submit">{icon('plus')} Gruppe erstellen</button>
           </div>
+          <label class="toggle-line" style="margin-top: 10px"><input type="checkbox" name="quick_group" value="true"> Quick Group{help_tip("Wenn aktiviert, erscheint diese Gruppe hinter den Quick Cats als schneller Filter auf der Startseite.")}</label>
           <div class="small" style="margin: 10px 0">Kategorien für die neue Gruppe auswählen.</div>
           <div class="category-choice-list">{group_category_checkboxes}</div>
         </form>
@@ -7996,11 +8095,13 @@ def create_category_group() -> Response:
         if category_id in valid_ids
     ]
     if name:
-        groups.append({
+        group = {
             "id": unique_category_group_id(groups, name),
             "name": name,
             "category_ids": selected_ids,
-        })
+        }
+        apply_category_group_options_from_form(group)
+        groups.append(group)
         config["category_groups"] = groups
         save_config(config)
         set_notice("Kategoriegruppe erstellt. Für Home Assistant ggf. unter Settings > MQTT Status für alle senden.")
@@ -8023,6 +8124,7 @@ def update_category_group(group_id: str) -> Response:
             if name:
                 group["name"] = name
             group["category_ids"] = selected_ids
+            apply_category_group_options_from_form(group)
             break
     config["category_groups"] = groups
     save_config(config)

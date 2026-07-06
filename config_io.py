@@ -208,6 +208,10 @@ def write_simple_yaml(config: Dict[str, Any], path: Path = CONFIG_PATH) -> None:
         for group in category_groups:
             lines.append(f"  - id: {quote_yaml(group.get('id'))}")
             lines.append(f"    name: {quote_yaml(group.get('name'))}")
+            if group.get("color"):
+                lines.append(f"    color: {quote_yaml(group.get('color'))}")
+            if str(group.get("quick_group", "false")).strip().lower() in {"1", "true", "yes", "on", "ja"}:
+                lines.append('    quick_group: "true"')
             category_ids = group.get("category_ids") or ""
             if isinstance(category_ids, (list, tuple)):
                 category_ids = ", ".join(str(category_id) for category_id in category_ids if category_id)
