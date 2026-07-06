@@ -191,6 +191,12 @@ def write_simple_yaml(config: Dict[str, Any], path: Path = CONFIG_PATH) -> None:
                 lines.append(f"    color: {quote_yaml(category.get('color'))}")
             if str(category.get("quick_cat", "false")).strip().lower() in {"1", "true", "yes", "on", "ja"}:
                 lines.append('    quick_cat: "true"')
+            if str(category.get("show_in_grouped", "true")).strip().lower() in {"0", "false", "no", "off", "nein"}:
+                lines.append('    show_in_grouped: "false"')
+            if str(category.get("searchable", "true")).strip().lower() in {"0", "false", "no", "off", "nein"}:
+                lines.append('    searchable: "false"')
+            if str(category.get("group_expanded", "true")).strip().lower() in {"0", "false", "no", "off", "nein"}:
+                lines.append('    group_expanded: "false"')
 
     lines.append("")
     lines.append("products:")

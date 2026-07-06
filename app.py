@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.31-dev"
+APP_VERSION = "0.1.32-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -398,6 +398,20 @@ tr.is-target-price > td:first-child {
   background: color-mix(in srgb, var(--category-color) 14%, transparent);
   color: var(--fg);
 }
+.help-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: help;
+}
 .category-swatch {
   display: inline-block;
   width: 12px;
@@ -454,6 +468,26 @@ tr.is-target-price > td:first-child {
 .id-reveal.is-open .id-tooltip { display: block; }
 .category-section { margin-top: 16px; }
 .category-section h2 { margin: 0 0 8px; }
+.category-section details {
+  display: grid;
+  gap: 8px;
+}
+.category-section summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  cursor: pointer;
+  list-style: none;
+}
+.category-section summary::-webkit-details-marker { display: none; }
+.category-section summary::before {
+  content: "▸";
+  color: var(--accent);
+}
+.category-section details[open] summary::before {
+  content: "▾";
+}
 .product-cell {
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr);
@@ -2225,15 +2259,59 @@ def category_color_from_form() -> str:
     return normalize_hex_color(request.form.get("color_text", ""))
 
 
+def apply_category_options_from_form(category: Dict[str, Any]) -> None:
+    if request.form.get("quick_cat") == "true":
+        category["quick_cat"] = "true"
+    else:
+        category.pop("quick_cat", None)
+    for form_name, config_name in (
+        ("show_in_grouped", "show_in_grouped"),
+        ("searchable", "searchable"),
+        ("group_expanded", "group_expanded"),
+    ):
+        if request.form.get(form_name) == "true":
+            category.pop(config_name, None)
+        else:
+            category[config_name] = "false"
+
+
 def category_quick_enabled(category: Dict[str, Any]) -> bool:
     raw = str(category.get("quick_cat", "false")).strip().lower()
     return raw in {"1", "true", "yes", "on", "ja"}
 
 
+def category_show_in_grouped(category: Dict[str, Any]) -> bool:
+    raw = str(category.get("show_in_grouped", "true")).strip().lower()
+    return raw not in {"0", "false", "no", "off", "nein"}
+
+
+def category_searchable(category: Dict[str, Any]) -> bool:
+    raw = str(category.get("searchable", "true")).strip().lower()
+    return raw not in {"0", "false", "no", "off", "nein"}
+
+
+def category_group_expanded(category: Dict[str, Any]) -> bool:
+    raw = str(category.get("group_expanded", "true")).strip().lower()
+    return raw not in {"0", "false", "no", "off", "nein"}
+
+
+def help_tip(text: str) -> str:
+    return f'<span class="help-tip" title="{escape(text)}" aria-label="{escape(text)}">?</span>'
+
+
 def category_admin_row_html(category: Dict[str, Any], product_count: int) -> str:
     color = category_color(category)
     swatch = f'<span class="category-swatch" style="--category-color: {escape(color)}"></span>' if color else ""
-    quick_label = '<br><span class="small">Quick Cat</span>' if category_quick_enabled(category) else ""
+    labels = []
+    if category_quick_enabled(category):
+        labels.append("Quick Cat")
+    if not category_show_in_grouped(category):
+        labels.append("nicht gruppiert")
+    if not category_searchable(category):
+        labels.append("nicht durchsuchbar")
+    if not category_group_expanded(category):
+        labels.append("eingeklappt")
+    option_label = f'<br><span class="small">{" · ".join(labels)}</span>' if labels else ""
     delete_button = (
         f'<a class="button danger" href="/?categories_dialog=1&delete_category={escape(category["id"])}">Löschen</a>'
         if category["id"] != DEFAULT_CATEGORY_ID
@@ -2242,7 +2320,7 @@ def category_admin_row_html(category: Dict[str, Any], product_count: int) -> str
     return (
         '<div class="market-row">'
         f'<div><strong>{swatch}{escape(category.get("name") or category["id"])}</strong><br>'
-        f'<span class="small">{product_count} Artikel</span>{quick_label}</div>'
+        f'<span class="small">{product_count} Artikel</span>{option_label}</div>'
         '<div class="row-actions">'
         f'<a class="button" href="/?edit_category={escape(category["id"])}">Bearbeiten</a>'
         f'{delete_button}</div></div>'
@@ -3042,6 +3120,9 @@ def mqtt_state_payload(config: Dict[str, Any], product: Dict[str, Any]) -> Dict[
         "market": market_text,
         "category_id": product_category_id(product),
         "category": category.get("name") or DEFAULT_CATEGORY_NAME,
+        "category_show_in_grouped": category_show_in_grouped(category),
+        "category_searchable": category_searchable(category),
+        "category_group_expanded": category_group_expanded(category),
         "price": mqtt_price,
         "price_cents": price_cents,
         "price_text": format_cents(price_cents),
@@ -3937,6 +4018,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         target_filter = "all"
     search_text = request.args.get("q", "").strip()
     grouped_view = request.args.get("view") == "grouped" or (not request.args and default_home_view(config) == "grouped")
+    categories_by_id_for_filter = category_lookup(config)
     products = [
         product
         for product in all_products
@@ -3946,6 +4028,11 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             or (selected_shop == "all_shops" and provider_kind(product_provider(config, product)) != "prospect")
             or (selected_shop == "all_prospects" and provider_kind(product_provider(config, product)) == "prospect")
             or product_provider(config, product) == selected_shop
+        )
+        and (
+            not search_text
+            or category_filter_ids
+            or category_searchable(categories_by_id_for_filter.get(product_category_id(product), {}))
         )
         and (
             not search_text
@@ -4217,8 +4304,16 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             f'<input type="color" data-color-picker value="{escape(edit_color)}">'
             f'<input name="color_text" data-color-text value="{escape(edit_color_text)}" placeholder="#d0001f" pattern="#?[0-9a-fA-F]{{6}}">'
             '</div></div>'
-            '<label class="toggle-line"><input type="checkbox" name="clear_color" value="true"> Farbe auf Standard zurücksetzen</label>'
-            f'<label class="toggle-line"><input type="checkbox" name="quick_cat" value="true" {"checked" if category_quick_enabled(edit_category) else ""}> Quick Cat</label>'
+            '<label class="toggle-line"><input type="checkbox" name="clear_color" value="true"> Farbe auf Standard zurücksetzen'
+            f'{help_tip("Entfernt die eigene Farbe dieser Kategorie und nutzt wieder die Standarddarstellung.")}</label>'
+            f'<label class="toggle-line"><input type="checkbox" name="quick_cat" value="true" {"checked" if category_quick_enabled(edit_category) else ""}> Quick Cat'
+            f'{help_tip("Wenn aktiviert, erscheint diese Kategorie als schneller Filter-Chip auf der Startseite.")}</label>'
+            f'<label class="toggle-line"><input type="checkbox" name="show_in_grouped" value="true" {"checked" if category_show_in_grouped(edit_category) else ""}> In Gruppierung anzeigen'
+            f'{help_tip("Wenn aktiviert, wird diese Kategorie in der gruppierten Übersicht ohne Kategorieauswahl angezeigt. Direkte Einzel- und Mehrfachauswahl zeigt sie trotzdem.")}</label>'
+            f'<label class="toggle-line"><input type="checkbox" name="searchable" value="true" {"checked" if category_searchable(edit_category) else ""}> Kategorie ist durchsuchbar'
+            f'{help_tip("Wenn aktiviert, findet die globale Suche Artikel in dieser Kategorie. Wenn deaktiviert, ignoriert die globale Suche diese Kategorie.")}</label>'
+            f'<label class="toggle-line"><input type="checkbox" name="group_expanded" value="true" {"checked" if category_group_expanded(edit_category) else ""}> Standardmäßig ausgeklappt'
+            f'{help_tip("Legt fest, ob diese Kategorie in der gruppierten Ansicht standardmäßig aufgeklappt ist. Bei Suchtreffern wird sie automatisch geöffnet.")}</label>'
             '<div class="actions" style="margin-top: 12px"><button class="primary" type="submit">Speichern</button>'
             '<a class="button" href="/?categories_dialog=1">Abbrechen</a></div></form></section></div>'
         )
@@ -4868,14 +4963,25 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     table_html = ""
     if grouped_view:
         sections = []
+        implicit_group_overview = (
+            not category_filter_ids
+            and selected_shop == "all"
+            and target_filter == "all"
+            and not search_text
+        )
         for category in categories:
+            if implicit_group_overview and not category_show_in_grouped(category):
+                continue
             category_rows_for_table = rows_by_category.get(category["id"], [])
             if not category_rows_for_table:
                 continue
+            details_open = " open" if (category_group_expanded(category) or search_text or category_filter_ids) else ""
             sections.append(
                 '<section class="category-section">'
-                f'<h2>{escape(category.get("name") or category["id"])}</h2>'
+                f'<details{details_open}>'
+                f'<summary><h2>{escape(category.get("name") or category["id"])}</h2></summary>'
                 f'{render_product_table(category_rows_for_table)}'
+                '</details>'
                 '</section>'
             )
         table_html = "".join(sections) or '<div class="panel small">Keine Artikel gefunden.</div>'
@@ -5051,8 +5157,13 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
           <input type="color" data-color-picker value="#d0001f">
           <input name="color_text" data-color-text placeholder="#d0001f" pattern="#?[0-9a-fA-F]{{6}}">
         </div></div>
-        <label class="toggle-line"><input type="checkbox" name="quick_cat" value="true"> Quick Cat</label>
+        <label class="toggle-line"><input type="checkbox" name="quick_cat" value="true"> Quick Cat{help_tip("Wenn aktiviert, erscheint diese Kategorie als schneller Filter-Chip auf der Startseite.")}</label>
         <button class="primary" type="submit">{icon('plus')} Erstellen</button>
+        <div class="settings-card" style="grid-column: 1 / -1; margin: 0">
+          <label class="toggle-line"><input type="checkbox" name="show_in_grouped" value="true" checked> In Gruppierung anzeigen{help_tip("Wenn aktiviert, wird diese Kategorie in der gruppierten Übersicht ohne Kategorieauswahl angezeigt. Direkte Einzel- und Mehrfachauswahl zeigt sie trotzdem.")}</label>
+          <label class="toggle-line"><input type="checkbox" name="searchable" value="true" checked> Kategorie ist durchsuchbar{help_tip("Wenn aktiviert, findet die globale Suche Artikel in dieser Kategorie. Wenn deaktiviert, ignoriert die globale Suche diese Kategorie.")}</label>
+          <label class="toggle-line"><input type="checkbox" name="group_expanded" value="true" checked> Standardmäßig ausgeklappt{help_tip("Legt fest, ob diese Kategorie in der gruppierten Ansicht standardmäßig aufgeklappt ist. Bei Suchtreffern wird sie automatisch geöffnet.")}</label>
+        </div>
       </form>
       <div class="market-list" style="margin-top: 12px">{category_rows}</div>
     </section>
@@ -7659,8 +7770,7 @@ def create_category() -> Response:
         color = category_color_from_form()
         if color:
             category["color"] = color
-        if request.form.get("quick_cat") == "true":
-            category["quick_cat"] = "true"
+        apply_category_options_from_form(category)
         categories.append(category)
         save_config(config)
     return redirect(url_for("index", categories_dialog=1))
@@ -7684,10 +7794,7 @@ def rename_category(category_id: str) -> Response:
                         category["color"] = color
                     else:
                         category.pop("color", None)
-                if request.form.get("quick_cat") == "true":
-                    category["quick_cat"] = "true"
-                else:
-                    category.pop("quick_cat", None)
+                apply_category_options_from_form(category)
                 break
         save_config(config)
     return redirect(url_for("index", categories_dialog=1))

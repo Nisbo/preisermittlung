@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.3.6";
+const CARD_VERSION = "0.3.7";
 const CARD_TYPE = "preisermittlung-card";
 
 const DEFAULT_CONFIG = {
@@ -145,6 +145,9 @@ function entityToProduct(entityId, stateObj) {
     sourceType: attr.source_type || "",
     categoryId: attr.category_id || "",
     category: attr.category || attr.category_id || "Allgemein",
+    categoryShowInGrouped: attr.category_show_in_grouped !== false,
+    categorySearchable: attr.category_searchable !== false,
+    categoryGroupExpanded: attr.category_group_expanded !== false,
     price: priceCents !== null ? priceCents / 100 : null,
     priceCents,
     targetPrice,
@@ -415,6 +418,7 @@ class PreisermittlungCard extends HTMLElement {
     const relevantKeys = [
       "name", "friendly_name", "article_number", "search_term", "provider", "provider_name", "shop", "shop_detail",
       "market", "source_type", "category_id", "category", "price", "price_cents", "price_text", "unit_price", "package_size",
+      "category_show_in_grouped", "category_searchable", "category_group_expanded",
       "unit_price_text", "package_size_text", "target_price", "target_price_cents", "target_price_text", "below_target_price",
       "available", "image_url", "status", "error", "url",
       "last_checked", "last_changed", "match_count", "matches", "extra_matches", "pdf_page", "pdf_file",
@@ -448,10 +452,17 @@ class PreisermittlungCard extends HTMLElement {
         const attr = stateObj.attributes || {};
         const id = attr.category_id || "";
         const name = attr.category || id || "Allgemein";
-        if (!categories.has(id)) categories.set(id, name);
+        if (!categories.has(id)) {
+          categories.set(id, {
+            id,
+            name,
+            showInGrouped: attr.category_show_in_grouped !== false,
+            searchable: attr.category_searchable !== false,
+            groupExpanded: attr.category_group_expanded !== false,
+          });
+        }
       });
-    return [...categories.entries()]
-      .map(([id, name]) => ({ id, name }))
+    return [...categories.values()]
       .sort((left, right) => left.name.localeCompare(right.name, "de", { sensitivity: "base" }));
   }
 
@@ -650,7 +661,16 @@ class PreisermittlungCard extends HTMLElement {
     const groups = new Map();
     products.forEach((product) => {
       const key = product.categoryId || "_default";
-      if (!groups.has(key)) groups.set(key, { id: key, name: product.category || "Allgemein", products: [] });
+      if (!groups.has(key)) {
+        groups.set(key, {
+          id: key,
+          name: product.category || "Allgemein",
+          showInGrouped: product.categoryShowInGrouped,
+          searchable: product.categorySearchable,
+          expanded: product.categoryGroupExpanded,
+          products: [],
+        });
+      }
       groups.get(key).products.push(product);
     });
     return [...groups.values()].sort((left, right) => left.name.localeCompare(right.name, "de", { sensitivity: "base" }));
@@ -741,7 +761,8 @@ class PreisermittlungCard extends HTMLElement {
     const query = String(this._searchText || "").trim().toLowerCase();
     let visibleCount = 0;
     this.shadowRoot.querySelectorAll("[data-product-row]").forEach((row) => {
-      const visible = !query || String(row.dataset.searchText || "").includes(query);
+      const categorySearchable = row.dataset.categorySearchable !== "false";
+      const visible = !query || this._selectedCategories.length || (categorySearchable && String(row.dataset.searchText || "").includes(query));
       row.hidden = !visible;
       if (visible) visibleCount += 1;
       const extraRow = row.nextElementSibling?.classList?.contains("extra-matches-row") ? row.nextElementSibling : null;
@@ -749,7 +770,8 @@ class PreisermittlungCard extends HTMLElement {
     });
     this.shadowRoot.querySelectorAll(".group").forEach((group) => {
       const hasVisibleRows = [...group.querySelectorAll("[data-product-row]")].some((row) => !row.hidden);
-      group.hidden = !hasVisibleRows;
+      const hideByCategory = !query && !this._selectedCategories.length && group.dataset.categoryShow === "false";
+      group.hidden = !hasVisibleRows || hideByCategory;
     });
     const subtitle = this.shadowRoot.querySelector("[data-subtitle]");
     if (subtitle) {
@@ -761,9 +783,11 @@ class PreisermittlungCard extends HTMLElement {
 
   _table(group) {
     const columns = this._config.columns;
+    const initiallyHidden = this._config.group_by_category && !this._selectedCategories.length && !this._searchText && group.showInGrouped === false;
+    const detailsOpen = group.expanded || this._searchText || this._selectedCategories.length;
     return `
-      <section class="group">
-        ${group.name ? `<div class="group-title">${escapeHtml(group.name)}</div>` : ""}
+      <section class="group" data-category-show="${group.showInGrouped === false ? "false" : "true"}" ${initiallyHidden ? "hidden" : ""}>
+        ${group.name ? `<details class="group-details" ${detailsOpen ? "open" : ""}><summary class="group-title">${escapeHtml(group.name)}</summary>` : ""}
         <div class="table-wrap">
           <table>
             <thead>
@@ -774,6 +798,7 @@ class PreisermittlungCard extends HTMLElement {
             </tbody>
           </table>
         </div>
+        ${group.name ? "</details>" : ""}
       </section>
     `;
   }
@@ -784,7 +809,7 @@ class PreisermittlungCard extends HTMLElement {
       this._config.target_price_highlight_enabled && product.belowTargetPrice ? "is-target-price" : "",
     ].filter(Boolean).join(" ");
     return `
-      <tr data-entity-id="${escapeHtml(product.entityId)}" data-product-row data-search-text="${escapeHtml(this._productSearchText(product))}" class="${rowClass}">
+      <tr data-entity-id="${escapeHtml(product.entityId)}" data-product-row data-category-searchable="${product.categorySearchable ? "true" : "false"}" data-search-text="${escapeHtml(this._productSearchText(product))}" class="${rowClass}">
         ${columns.map((column) => `<td class="col-${column}">${this._cell(product, column)}</td>`).join("")}
       </tr>
       ${this._extraMatchesRow(product, columns)}
@@ -1128,6 +1153,25 @@ class PreisermittlungCard extends HTMLElement {
         box-shadow: 0 0 0 1px var(--primary-color);
       }
       .content { padding: 0 0 8px; }
+      .group-details {
+        display: block;
+      }
+      .group-details summary {
+        cursor: pointer;
+        list-style: none;
+      }
+      .group-details summary::-webkit-details-marker {
+        display: none;
+      }
+      .group-details summary::before {
+        content: "▸";
+        display: inline-block;
+        margin-right: 8px;
+        color: var(--primary-color);
+      }
+      .group-details[open] summary::before {
+        content: "▾";
+      }
       .group-title {
         padding: 14px 16px 6px;
         color: var(--pm-muted);
