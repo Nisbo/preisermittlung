@@ -52,7 +52,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.27-dev"
+APP_VERSION = "0.1.28-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -272,7 +272,11 @@ tr:last-child td { border-bottom: 0; }
   border-color: color-mix(in srgb, #0f8b3d 55%, var(--line));
   background: color-mix(in srgb, #0f8b3d 10%, var(--panel));
 }
-.price-icon svg { width: 14px; height: 14px; }
+.price-icon svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+}
 .history-button {
   width: 26px;
   min-height: 26px;
@@ -1378,7 +1382,7 @@ function renderHistoryChart(container, data) {
     ? noOfferPoints.map((item, index) => `${index ? 'L' : 'M'}${xFor(item.checked_at).toFixed(1)} ${noOfferY.toFixed(1)}`).join(' ')
     : '';
   const unavailableLabel = noOfferPoints.length
-    ? `<text x="${pad.left}" y="${noOfferY + 4}" text-anchor="end" fill="var(--warn)" font-size="11">Kein Angebot</text>`
+    ? `<text x="${pad.left + 8}" y="${noOfferY + 4}" text-anchor="start" fill="#9a6a00" font-size="11">Kein Angebot</text>`
     : '';
   const circles = points.map((item) => {
     const x = xFor(item.checked_at).toFixed(1);

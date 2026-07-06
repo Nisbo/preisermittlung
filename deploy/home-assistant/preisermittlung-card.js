@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.3.5";
+const CARD_VERSION = "0.3.6";
 const CARD_TYPE = "preisermittlung-card";
 
 const DEFAULT_CONFIG = {
@@ -94,12 +94,36 @@ function nullableNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function isFalseLike(value) {
+  if (value === false) return true;
+  return ["false", "0", "off", "no", "nein"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+function isNoOfferAttributes(attr, stateValue) {
+  const error = String(attr.error || "").trim().toLowerCase();
+  const status = String(attr.status || "").trim().toLowerCase();
+  const priceText = String(attr.price_text || "").trim();
+  const priceCents = nullableNumber(attr.price_cents);
+  const price = nullableNumber(attr.price);
+  return (
+    isFalseLike(attr.available)
+    || error === "kein angebot"
+    || status === "kein angebot"
+    || (
+      status === "error"
+      && priceCents === null
+      && price === null
+      && (priceText === "-" || ["unknown", "unavailable", ""].includes(String(stateValue || "").trim().toLowerCase()))
+    )
+  );
+}
+
 function entityToProduct(entityId, stateObj) {
   const attr = stateObj.attributes || {};
   const providerName = attr.provider_name || attr.provider || "";
   const shop = attr.shop || "";
   const shopDetail = attr.shop_detail || "";
-  const noOffer = attr.available === false || attr.error === "Kein Angebot" || attr.status === "Kein Angebot";
+  const noOffer = isNoOfferAttributes(attr, stateObj.state);
   const rawTargetPrice = nullableNumber(attr.target_price);
   const rawTargetPriceCents = nullableNumber(attr.target_price_cents);
   const targetPriceCents = rawTargetPriceCents && rawTargetPriceCents > 0 ? rawTargetPriceCents : null;
