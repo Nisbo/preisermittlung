@@ -54,13 +54,14 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.35-dev"
+APP_VERSION = "0.1.36-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
 APP_LOG_PATH = Path(__file__).with_name("tmp").joinpath("app.log")
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
+PAGE_SIZE_OPTIONS = [10, 25, 50, 75, 100]
 app = Flask(__name__)
 
 
@@ -893,6 +894,49 @@ body[data-theme="dark"] .visual-price-map {
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
+}
+.pagination-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.pagination-size {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pagination-size .field {
+  min-width: 170px;
+}
+.pagination-links {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pagination-links .button,
+.pagination-links span.button {
+  min-width: 38px;
+  justify-content: center;
+  padding-inline: 10px;
+}
+.pagination-links .is-current {
+  background: var(--accent-button);
+  border-color: var(--accent-button);
+  color: #fff;
+}
+.pagination-links .is-disabled {
+  opacity: .45;
+  pointer-events: none;
+}
+.pagination-ellipsis {
+  color: var(--muted);
+  padding: 0 4px;
 }
 .refresh-box {
   display: grid;
@@ -2124,6 +2168,82 @@ def local_url_with_fragment(value: str, fragment: str) -> str:
     return urllib.parse.urlunparse(parsed._replace(fragment=clean_fragment))
 
 
+def list_url_with_updates(updates: Dict[str, Any]) -> str:
+    transient_keys = {
+        "add_pdf",
+        "add_product",
+        "categories_dialog",
+        "delete_category",
+        "delete_category_group",
+        "delete_market",
+        "done",
+        "edit_category",
+        "edit_category_group",
+        "edit_product",
+        "generic_dialog",
+        "hit_dialog",
+        "market_dialog",
+        "market_results",
+        "markets_dialog",
+        "mqtt_product",
+        "refresh_started",
+        "rename_category",
+        "toggle_hit_app_price",
+    }
+    query = []
+    for key, values in request.args.to_dict(flat=False).items():
+        if key in transient_keys or key in updates:
+            continue
+        query.extend((key, value) for value in values)
+    for key, raw_value in updates.items():
+        if raw_value is None:
+            continue
+        if isinstance(raw_value, (list, tuple)):
+            query.extend((key, str(item)) for item in raw_value)
+        else:
+            query.append((key, str(raw_value)))
+    encoded = urllib.parse.urlencode(query, doseq=True)
+    return "/?" + encoded if encoded else "/"
+
+
+def list_hidden_inputs(updates: Optional[Dict[str, Any]] = None) -> str:
+    updates = updates or {}
+    transient_keys = {
+        "add_pdf",
+        "add_product",
+        "categories_dialog",
+        "delete_category",
+        "delete_category_group",
+        "delete_market",
+        "done",
+        "edit_category",
+        "edit_category_group",
+        "edit_product",
+        "generic_dialog",
+        "hit_dialog",
+        "market_dialog",
+        "market_results",
+        "markets_dialog",
+        "mqtt_product",
+        "refresh_started",
+        "rename_category",
+        "toggle_hit_app_price",
+    }
+    parts = []
+    for key, values in request.args.to_dict(flat=False).items():
+        if key in transient_keys or key in updates:
+            continue
+        for value in values:
+            parts.append(f'<input type="hidden" name="{escape(key)}" value="{escape(str(value))}">')
+    for key, raw_value in updates.items():
+        if raw_value is None:
+            continue
+        values = raw_value if isinstance(raw_value, (list, tuple)) else [raw_value]
+        for value in values:
+            parts.append(f'<input type="hidden" name="{escape(key)}" value="{escape(str(value))}">')
+    return "".join(parts)
+
+
 def refresh_marker() -> str:
     return str(int(time.time() * 1000))
 
@@ -3012,6 +3132,28 @@ def default_home_view(config: Dict[str, Any]) -> str:
     return "grouped" if value == "grouped" else "all"
 
 
+def default_home_page_size(config: Dict[str, Any]) -> int:
+    raw = settings_value(config, "home_page_size", "50").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 50
+    return value if value in PAGE_SIZE_OPTIONS else 50
+
+
+def page_size_from_args(config: Dict[str, Any]) -> tuple[int, str]:
+    raw = (request.args.get("per_page") or "standard").strip().lower()
+    if raw == "standard":
+        return default_home_page_size(config), "standard"
+    try:
+        value = int(raw)
+    except ValueError:
+        return default_home_page_size(config), "standard"
+    if value in PAGE_SIZE_OPTIONS:
+        return value, str(value)
+    return default_home_page_size(config), "standard"
+
+
 def multi_category_filter_enabled(config: Dict[str, Any]) -> bool:
     raw = settings_value(config, "multi_category_filter_enabled", "false").strip().lower()
     return raw in {"1", "true", "yes", "on", "ja"}
@@ -3077,6 +3219,8 @@ def save_settings_from_form(config: Dict[str, Any]) -> Dict[str, Any]:
         view = request.form.get("default_home_view", "all").strip().lower()
         settings["default_home_view"] = "grouped" if view == "grouped" else "all"
     if "home_settings_present" in request.form:
+        page_size_raw = request.form.get("home_page_size", "50").strip()
+        settings["home_page_size"] = page_size_raw if page_size_raw in {str(value) for value in PAGE_SIZE_OPTIONS} else "50"
         settings["multi_category_filter_enabled"] = (
             "true" if request.form.get("multi_category_filter_enabled") == "true" else "false"
         )
@@ -4191,6 +4335,82 @@ def render_product_table(rows: List[str]) -> str:
     )
 
 
+def page_window(current_page: int, page_count: int) -> List[Optional[int]]:
+    if page_count <= 7:
+        return list(range(1, page_count + 1))
+    pages = {1, page_count, current_page}
+    for offset in (-2, -1, 1, 2):
+        candidate = current_page + offset
+        if 1 <= candidate <= page_count:
+            pages.add(candidate)
+    ordered = sorted(pages)
+    result: List[Optional[int]] = []
+    previous = 0
+    for page in ordered:
+        if previous and page - previous > 1:
+            result.append(None)
+        result.append(page)
+        previous = page
+    return result
+
+
+def render_pagination(
+    total_items: int,
+    page: int,
+    per_page: int,
+    per_page_choice: str,
+    default_per_page: int,
+    enabled: bool,
+) -> str:
+    if not enabled:
+        return ""
+    page_count = max(1, (total_items + per_page - 1) // per_page)
+    start = 0 if total_items == 0 else ((page - 1) * per_page) + 1
+    end = min(total_items, page * per_page)
+    size_options = [("standard", f"Standard ({default_per_page})")]
+    size_options.extend((str(value), str(value)) for value in PAGE_SIZE_OPTIONS)
+    size_select = "".join(
+        f'<option value="{escape(value)}" {"selected" if per_page_choice == value else ""}>{escape(label)}</option>'
+        for value, label in size_options
+    )
+
+    def nav_link(label: str, target_page: int, disabled: bool = False, title: str = "") -> str:
+        if disabled:
+            return f'<span class="button is-disabled" aria-disabled="true" title="{escape(title)}">{label}</span>'
+        href = list_url_with_updates({"page": target_page})
+        return f'<a class="button" href="{escape(href)}" title="{escape(title)}">{label}</a>'
+
+    page_links = [
+        nav_link("«", 1, page <= 1, "Erste Seite"),
+        nav_link("‹", max(1, page - 1), page <= 1, "Vorherige Seite"),
+    ]
+    for item in page_window(page, page_count):
+        if item is None:
+            page_links.append('<span class="pagination-ellipsis">…</span>')
+        elif item == page:
+            page_links.append(f'<span class="button is-current" aria-current="page">{item}</span>')
+        else:
+            href = list_url_with_updates({"page": item})
+            page_links.append(f'<a class="button" href="{escape(href)}">{item}</a>')
+    page_links.extend(
+        [
+            nav_link("›", min(page_count, page + 1), page >= page_count, "Nächste Seite"),
+            nav_link("»", page_count, page >= page_count, "Letzte Seite"),
+        ]
+    )
+    return (
+        '<div class="pagination-bar">'
+        '<form class="pagination-size" method="get" action="/">'
+        f'{list_hidden_inputs({"page": "1", "per_page": None})}'
+        '<div class="field"><label>Artikel pro Seite</label>'
+        f'<select name="per_page" onchange="this.form.submit()">{size_select}</select></div>'
+        f'<span class="small">{start}-{end} von {total_items} Artikel</span>'
+        '</form>'
+        f'<nav class="pagination-links" aria-label="Seitennavigation">{"".join(page_links)}</nav>'
+        '</div>'
+    )
+
+
 def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[str] = None) -> str:
     settings = config.get("settings") or {}
     markets = markets_from_config(config)
@@ -4262,6 +4482,24 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         )
         and (target_filter != "hit" or product_below_target_price(product))
     ]
+    per_page, per_page_choice = page_size_from_args(config)
+    default_per_page = default_home_page_size(config)
+    page_count = max(1, (len(products) + per_page - 1) // per_page)
+    try:
+        current_page = int(request.args.get("page", "1") or 1)
+    except ValueError:
+        current_page = 1
+    current_page = min(max(1, current_page), page_count)
+    page_start = (current_page - 1) * per_page
+    display_products = products if grouped_view else products[page_start:page_start + per_page]
+    pagination_html = render_pagination(
+        len(products),
+        current_page,
+        per_page,
+        per_page_choice,
+        default_per_page,
+        not grouped_view,
+    )
     total = sum(int(product["state"].get("price_cents") or 0) for product in products)
     changed_at = latest_change_at(products)
     next_run_value = None
@@ -4511,6 +4749,11 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     )
     grouped_hidden = '<input type="hidden" name="view" value="grouped">' if grouped_view else ""
     target_filter_hidden = '<input type="hidden" name="target" value="hit">' if target_filter == "hit" else ""
+    per_page_hidden = (
+        f'<input type="hidden" name="per_page" value="{escape(per_page_choice)}">'
+        if per_page_choice != "standard"
+        else ""
+    )
     group_toggle_control = (
         f'<button class="{group_active_class.strip()}" type="submit" name="view" value="grouped">{icon("list")} Gruppieren</button>'
     )
@@ -4888,7 +5131,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     reset_history_dialogs = []
     move_dialogs = []
     delete_product_dialogs = []
-    for product in products:
+    for product in display_products:
         item_state = product["state"]
         last_error = item_state.get("last_error")
         no_offer = product_no_offer(item_state)
@@ -5402,6 +5645,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
       <form class="grid filter-grid" method="get" action="/">
         {grouped_hidden}
         {target_filter_hidden}
+        {per_page_hidden}
         <div class="category-filter-control{' has-multi' if multi_category_enabled else ''}">
           {category_multi_button}
           <div class="field"><label>Kategorieauswahl</label><select name="category" onchange="this.form.submit()">{category_filter_options}</select></div>
@@ -5415,6 +5659,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     </section>
     <section data-results>
       {table_html}
+      {pagination_html}
       <div class="table-actions">
         <form class="refresh-box" method="post" action="/refresh">
           <button class="primary">{icon('refresh')} Alle aktualisieren</button>
@@ -5747,6 +5992,11 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     extra_matches_mode = pdf_extra_matches_display_mode(config)
     extra_matches_open = pdf_extra_matches_expanded(config)
     home_view = default_home_view(config)
+    home_page_size = default_home_page_size(config)
+    home_page_size_options = "".join(
+        f'<option value="{value}" {"selected" if home_page_size == value else ""}>{value}</option>'
+        for value in PAGE_SIZE_OPTIONS
+    )
     valid_settings_tabs = ["info", "home", "queries", "pdfs", "api", "browser", "mqtt", "backup", "updates", "logs"]
     active_settings_tab = request.args.get("tab", "").strip().lower()
     if active_settings_tab not in valid_settings_tabs:
@@ -6089,6 +6339,13 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
               <option value="grouped" {'selected' if home_view == 'grouped' else ''}>Gruppiert</option>
             </select>
             <div class="small">Gilt nur, wenn die Startseite direkt ohne Filter oder View-Parameter geöffnet wird.</div>
+          </div>
+          <div class="field" style="margin-top: 10px">
+            <label>Standard Artikel pro Seite</label>
+            <select name="home_page_size">
+              {home_page_size_options}
+            </select>
+            <div class="small">Gilt für die normale Listenansicht. Gruppierte Ansichten bleiben vollständig und einklappbar.</div>
           </div>
           <div class="field" style="margin-top: 10px">
             <label class="toggle-line"><input type="checkbox" name="multi_category_filter_enabled" value="true" {'checked' if multi_category_filter_enabled(config) else ''}> Mehrfachauswahl für Kategorien aktivieren</label>
