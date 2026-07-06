@@ -1,4 +1,4 @@
-const CARD_VERSION = "0.3.3";
+const CARD_VERSION = "0.3.4";
 const CARD_TYPE = "preisermittlung-card";
 
 const DEFAULT_CONFIG = {
@@ -10,6 +10,8 @@ const DEFAULT_CONFIG = {
   show_category_dropdown: true,
   show_category_multi_filter: true,
   show_search: true,
+  show_target_price_filter: true,
+  target_price_filter_active: false,
   group_by_category: false,
   extra_matches_display: "wrap",
   extra_matches_expanded: true,
@@ -66,6 +68,8 @@ function normalizeConfig(config) {
   merged.extra_matches_expanded = merged.extra_matches_expanded !== false;
   merged.target_price_highlight_enabled = merged.target_price_highlight_enabled !== false;
   merged.target_price_extra_matches_enabled = merged.target_price_extra_matches_enabled === true;
+  merged.show_target_price_filter = merged.show_target_price_filter !== false;
+  merged.target_price_filter_active = merged.target_price_filter_active === true;
   merged.show_search = merged.show_search !== false;
   merged.show_category_filter = merged.show_category_filter !== false;
   merged.show_category_dropdown = merged.show_category_dropdown !== false;
@@ -254,6 +258,8 @@ class PreisermittlungCard extends HTMLElement {
             { name: "show_category_dropdown", selector: { boolean: {} } },
             { name: "show_category_multi_filter", selector: { boolean: {} } },
             { name: "show_search", selector: { boolean: {} } },
+            { name: "show_target_price_filter", selector: { boolean: {} } },
+            { name: "target_price_filter_active", selector: { boolean: {} } },
             { name: "group_by_category", selector: { boolean: {} } },
             { name: "compact", selector: { boolean: {} } },
           ],
@@ -284,6 +290,8 @@ class PreisermittlungCard extends HTMLElement {
           show_category_dropdown: "Kategorie-Dropdown anzeigen",
           show_category_multi_filter: "Mehrfachauswahl anzeigen",
           show_search: "Suche anzeigen",
+          show_target_price_filter: "Wunschpreis-Filter anzeigen",
+          target_price_filter_active: "Wunschpreis-Filter beim Laden aktiv",
           group_by_category: "Nach Kategorien gruppieren",
           compact: "Kompakte Zeilen",
           extra_matches_display: "Zusatztreffer anzeigen",
@@ -300,6 +308,7 @@ class PreisermittlungCard extends HTMLElement {
         if (schema.name === "service_url") return "Basis-URL der Preisermittlung-App, z.B. http://192.168.178.10:5050";
         if (schema.name === "category_id") return "Leer lassen für alle Kategorien. Eine ID oder mehrere IDs mit Komma eintragen, z.B. katzenfutter, trockenfutter.";
         if (schema.name === "target_price_extra_matches_enabled") return "Bei Prospekt-Zusatztreffern kann die Zuordnung unsicher sein, wenn ein Suchwort mehrere Angebote findet. Dort wird kompakt WP angezeigt.";
+        if (schema.name === "target_price_filter_active") return "Wenn aktiv, zeigt die Card beim ersten Laden nur Artikel, deren Wunschpreis erreicht wurde.";
         if (schema.name === "target_price_missed_display") return "Erreichte Wunschpreise bleiben grün sichtbar.";
         if (schema.name === "columns") return "Spalten beziehen sich exakt auf die MQTT-Attribute aus der README.";
         return undefined;
@@ -316,6 +325,7 @@ class PreisermittlungCard extends HTMLElement {
     this._selectedCategories = parseCategoryIds(this._config.category_id);
     this._categoryDialogOpen = false;
     this._searchText = "";
+    this._targetFilterActive = this._config.target_price_filter_active === true;
     this._sortBy = this._config.sort_by;
     this._sortDir = this._config.sort_dir;
     this._imageGallery = null;
@@ -347,6 +357,7 @@ class PreisermittlungCard extends HTMLElement {
       .filter(([entityId]) => entityId.startsWith(prefix))
       .map(([entityId, stateObj]) => entityToProduct(entityId, stateObj))
       .filter((product) => !this._selectedCategories.length || this._selectedCategories.includes(product.categoryId))
+      .filter((product) => !this._targetFilterActive || product.belowTargetPrice)
       .sort(compareProducts(this._sortBy || this._config.sort_by, this._sortDir || this._config.sort_dir));
   }
 
@@ -430,6 +441,7 @@ class PreisermittlungCard extends HTMLElement {
           </div>
           <div class="header-controls">
             ${this._config.show_search ? this._searchInput() : ""}
+            ${this._config.show_target_price_filter ? this._targetFilterButton() : ""}
             ${this._config.show_category_filter && (this._config.show_category_dropdown || this._config.show_category_multi_filter) ? this._categorySelect(categories) : ""}
           </div>
         </div>
@@ -504,6 +516,15 @@ class PreisermittlungCard extends HTMLElement {
         event.stopPropagation();
         this._selectedCategories = [];
         this._categoryDialogOpen = false;
+        this._render();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll("[data-target-filter]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this._targetFilterActive = !this._targetFilterActive;
         this._render();
       });
     });
@@ -588,6 +609,8 @@ class PreisermittlungCard extends HTMLElement {
         this._moveGallery(button.dataset.galleryDirection === "prev" ? -1 : 1);
       });
     });
+
+    if (this._searchText) this._applySearchFilter();
   }
 
   _groupProducts(products) {
@@ -663,6 +686,21 @@ class PreisermittlungCard extends HTMLElement {
         <span>Suche</span>
         <input data-search type="search" placeholder="Artikel, Anbieter, Shop ..." value="${escapeHtml(this._searchText || "")}">
       </label>
+    `;
+  }
+
+  _targetFilterButton() {
+    return `
+      <button class="target-filter-button ${this._targetFilterActive ? "is-active" : ""}" type="button" data-target-filter title="Nur erreichte Wunschpreise anzeigen" aria-label="Nur erreichte Wunschpreise anzeigen">
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="8"></circle>
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M12 2v3"></path>
+          <path d="M12 19v3"></path>
+          <path d="M2 12h3"></path>
+          <path d="M19 12h3"></path>
+        </svg>
+      </button>
     `;
   }
 
@@ -978,7 +1016,8 @@ class PreisermittlungCard extends HTMLElement {
       .category-filter-wrap.no-dropdown {
         grid-template-columns: 42px;
       }
-      .category-dialog-button {
+      .category-dialog-button,
+      .target-filter-button {
         appearance: none;
         width: 42px;
         height: 42px;
@@ -988,12 +1027,14 @@ class PreisermittlungCard extends HTMLElement {
         color: var(--primary-text-color);
         cursor: pointer;
       }
-      .category-dialog-button svg {
+      .category-dialog-button svg,
+      .target-filter-button svg {
         width: 18px;
         height: 18px;
         stroke: currentColor;
       }
-      .category-dialog-button.is-active {
+      .category-dialog-button.is-active,
+      .target-filter-button.is-active {
         border-color: var(--primary-color);
         color: var(--primary-color);
         background: rgba(var(--rgb-primary-color, 3, 169, 244), .12);

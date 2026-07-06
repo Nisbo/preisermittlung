@@ -131,6 +131,8 @@ def fetch_text(url: str) -> str:
         headers={
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "accept-language": "de-DE,de;q=0.9,en;q=0.7",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
             "user-agent": USER_AGENT_OVERRIDE or DESKTOP_USER_AGENT,
         },
     )
@@ -183,6 +185,8 @@ def download_pdf(url: str) -> Path:
         url,
         headers={
             "accept": "application/pdf,*/*;q=0.8",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
             "user-agent": USER_AGENT_OVERRIDE or DESKTOP_USER_AGENT,
         },
     )
@@ -631,12 +635,4 @@ def read_pdf_product_from_context(
 
 def read_aez_pdf_product(product: Dict[str, str], market: Dict[str, Any], postal_code: str) -> Dict[str, Any]:
     context = current_pdf_context()
-    try:
-        return read_pdf_product_from_context(product, context)
-    except RuntimeError as exc:
-        fallback_url = pdf_url_from_product(product)
-        if not fallback_url or canonical_pdf_url(context.get("pdf_url", "")) == fallback_url:
-            raise
-        if "Kein Treffer im PDF-Prospekt" not in str(exc):
-            raise
-        return read_pdf_product_from_context(product, pdf_context_for_url(fallback_url))
+    return read_pdf_product_from_context(product, context)

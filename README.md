@@ -12,13 +12,14 @@ ein Proxmox-LXC empfohlen.
 
 ## Anbieter
 
-Aktuell vorbereitet oder implementiert:
+Aktuell implementiert:
 
 - REWE mit Marktauswahl und Abholservice
 - Müller
 - MediaMarkt
 - ALDI Süd
 - Rossmann
+- HIT mit Marktauswahl und optionalem HIT-App-Preis
 - PDF-Prospekte, inklusive manuell hochgeladener PDFs
 - generische Webseitenauswertung für einzelne Preise
 
@@ -103,13 +104,8 @@ bearbeitet werden kann:
 - `categories`: Kategorien für Artikel
 - `products`: überwachte Artikel, Prospekt-Suchwörter oder Webseitenpreise
 
-Einen separaten `store`- oder Default-Markt gibt es im aktuellen Format nicht
-mehr. Wenn ein Artikel einen Markt braucht, steht direkt am Artikel der
-`provider` und die passende `market_id`. Dadurch ist eindeutig, welcher Artikel
-zu welchem Markt gehört.
-
-Alte Configs mit `store:` werden beim Lesen noch automatisch verstanden und beim
-nächsten Speichern in die `markets`/`products`-Struktur übernommen.
+Artikel speichern ihren Anbieter über `provider` und bei Bedarf den passenden
+Markt über `market_id`.
 
 ## Update per Git
 
@@ -161,21 +157,6 @@ können. Nicht mehr benötigte apt-Pakete kann man danach bei Bedarf manuell mit
 Auch das Deinstallationsscript muss als root laufen. Falls du nicht bereits root
 bist, nutze `sudo ./scripts/uninstall_debian.sh`.
 
-## Lokales Entwickeln
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python3 app.py
-```
-
-Danach:
-
-- Webansicht: `http://127.0.0.1:5050/`
-- JSON: `http://127.0.0.1:5050/api/prices`
-- Healthcheck: `http://127.0.0.1:5050/health`
-
 ## Home Assistant Card
 
 Die Custom Card liegt unter:
@@ -186,6 +167,39 @@ deploy/home-assistant/preisermittlung-card.js
 
 Die App kann per MQTT Home-Assistant-Discovery-Payloads und Statusdaten senden.
 Die eigentliche MQTT-Konfiguration befindet sich in der Settings-Seite.
+
+Die Datei kann direkt aus diesem Repository nach Home Assistant kopiert oder im
+File Editor hochgeladen werden, zum Beispiel nach:
+
+```text
+/config/www/preisermittlung-card.js
+```
+
+Danach in Home Assistant unter `Einstellungen > Dashboards > Ressourcen` als
+JavaScript-Modul eintragen:
+
+```text
+/local/preisermittlung-card.js
+```
+
+Ein minimales Lovelace-Beispiel:
+
+```yaml
+type: custom:preisermittlung-card
+title: Preisübersicht
+service_url: http://SERVER-IP:5151
+columns:
+  - image
+  - name
+  - provider
+  - shop
+  - price
+  - unit_price
+  - last_changed
+```
+
+Die Card unterstützt Kategorieauswahl, Suche, Sortierung, Zusatztreffer aus
+PDF-Prospekten, Bildvorschau und einen Wunschpreis-Filter.
 
 ## Hinweise zu `requirements.txt`
 
@@ -208,6 +222,8 @@ Lokale Probe-Scripts und Entwicklungstools gehören nicht hinein.
 - `readers/mediamarkt_reader.py`: MediaMarkt-Auslesemodul.
 - `readers/aldi_sued_reader.py`: ALDI-Süd-Auslesemodul mit Playwright/Chromium.
 - `readers/rossmann_reader.py`: Rossmann-Auslesemodul.
+- `readers/hit_reader.py`: HIT-Auslesemodul mit Marktauswahl und optionalem
+  App-Preis.
 - `readers/generic_reader.py`: generische Webseitenauswertung für beliebige URLs,
   inklusive einfacher HTTP-Methode und erweiterter Playwright-Methode.
 - `readers/aez_pdf_reader.py`: PDF-Prospektmodul für online bereitgestellte

@@ -44,6 +44,7 @@ service_url: http://192.168.178.10:5050
 group_by_category: true
 show_category_filter: true
 show_search: true
+show_target_price_filter: true
 extra_matches_display: slider
 extra_matches_expanded: true
 columns:
@@ -66,9 +67,14 @@ sort_dir: asc
 - `category_id`: feste Kategorie, leer bedeutet alle
 - `show_category_filter`: Kategorieauswahl in der Card anzeigen
 - `show_search`: Suche in der Card anzeigen
+- `show_target_price_filter`: Button für erreichte Wunschpreise anzeigen
+- `target_price_filter_active`: Wunschpreis-Filter beim Laden direkt aktivieren
 - `group_by_category`: Artikel nach Kategorie gruppieren
 - `extra_matches_display`: Zusatztreffer als `wrap`, `slider` oder `off` anzeigen
 - `extra_matches_expanded`: Zusatztreffer standardmäßig ausgeklappt anzeigen
+- `target_price_highlight_enabled`: erreichte Wunschpreise farblich markieren
+- `target_price_missed_display`: nicht erreichte Wunschpreise `hide`, `normal` oder `muted` anzeigen
+- `target_price_extra_matches_enabled`: Wunschpreis auch bei Prospekt-Zusatztreffern anzeigen
 - `columns`: sichtbare Spalten
 - `sort_by`: `name`, `provider`, `shop`, `shop_detail`, `price`, `category`, `last_checked`, `last_changed`, `status`
 - `sort_dir`: `asc` oder `desc`
