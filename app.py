@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.40-dev"
+APP_VERSION = "0.1.41-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -2357,6 +2357,7 @@ def icon(name: str) -> str:
         "search": '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
         "home": '<path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>',
         "list": '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+        "tags": '<path d="M9 5H5a2 2 0 0 0-2 2v4.6a2 2 0 0 0 .6 1.4l7.4 7.4a2 2 0 0 0 2.8 0l4.6-4.6a2 2 0 0 0 0-2.8L11 5.6A2 2 0 0 0 9.6 5Z"/><path d="M6 9h.01"/><path d="m15 5 6 6"/>',
         "filter": '<path d="M4 5h16"/><path d="M7 12h10"/><path d="M10 19h4"/>',
         "target": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/>',
         "chart": '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/><circle cx="7" cy="15" r="1"/><circle cx="11" cy="11" r="1"/><circle cx="14" cy="14" r="1"/><circle cx="19" cy="7" r="1"/>',
@@ -4842,7 +4843,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     multi_button_active_class = " is-active" if selected_multi_categories else ""
     category_multi_button = (
         f'<a class="button icon-only{multi_button_active_class}" href="{escape(multi_filter_href)}" title="Mehrere Kategorien auswählen" '
-        f'aria-label="Mehrere Kategorien auswählen">{icon("list")}</a>'
+        f'aria-label="Mehrere Kategorien auswählen">{icon("tags")}</a>'
         if multi_category_enabled
         else ""
     )
@@ -4939,10 +4940,11 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         else ""
     )
     status_filter_active = not status_filter_is_default(selected_statuses)
-    status_filter_label = "Status" if not status_filter_active else f"Status {len(selected_statuses)}/{len(STATUS_FILTERS)}"
+    status_filter_label = "Status filtern" if not status_filter_active else f"Status filtern: {len(selected_statuses)}/{len(STATUS_FILTERS)} aktiv"
     status_filter_button = (
-        f'<a class="button{" is-active" if status_filter_active else ""}" href="{escape(list_url_with_updates({"status_filter": "1"}))}">'
-        f'{icon("filter")} {escape(status_filter_label)}</a>'
+        f'<a class="button icon-only{" is-active" if status_filter_active else ""}" '
+        f'href="{escape(list_url_with_updates({"status_filter": "1"}))}" title="{escape(status_filter_label)}" '
+        f'aria-label="{escape(status_filter_label)}">{icon("filter")}</a>'
     )
     status_filter_hidden = "".join(
         f'<input type="hidden" name="status" value="{escape(status)}">'
@@ -6562,7 +6564,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           </div>
           <div class="field" style="margin-top: 10px">
             <label class="toggle-line"><input type="checkbox" name="sum_footer_enabled" value="true" {'checked' if sum_footer_enabled(config) else ''}> Summenzeilen anzeigen</label>
-            <div class="small">Zeigt in der Listenansicht die Summe der angezeigten Artikel und in der Gruppierung die Kategorie-Summe.</div>
+            <div class="small">Zeigt in der Listenansicht die Summe der angezeigten Artikel und in der Gruppierung die Kategorie-Summe. In gruppierten Kategorien erscheint zusätzlich ein kleiner „Alle“-Button, der nur diese Kategorie aktualisiert.</div>
           </div>
           <div class="field" style="margin-top: 10px">
             <label class="toggle-line"><input type="checkbox" name="multi_category_filter_enabled" value="true" {'checked' if multi_category_filter_enabled(config) else ''}> Mehrfachauswahl für Kategorien aktivieren</label>
