@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.37-dev"
+APP_VERSION = "0.1.38-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -158,23 +158,20 @@ h2 { margin: 0 0 10px; font-size: 17px; }
 .header-meta-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  gap: 6px;
   align-items: center;
-}
-.header-meta-row > span:first-child {
-  min-width: 0;
-  white-space: nowrap;
 }
 .header-meta-row strong {
   color: var(--fg);
   font-weight: 650;
 }
-.header-meta-label {
-  color: var(--muted);
+.header-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
-.header-meta-separator {
-  color: var(--muted);
-}
+.header-meta-separator { color: var(--muted); }
+.status-dot.off { background: var(--muted); }
 .actions, .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .action-grid {
   display: grid;
@@ -734,13 +731,21 @@ tr.is-target-price > td:first-child {
   display: grid;
   grid-template-columns: 1fr .9fr minmax(240px, 1.55fr) auto auto auto;
   gap: 10px;
-  align-items: end;
+  align-items: center;
+}
+.filter-tools .field label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 .category-filter-control {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 8px;
-  align-items: end;
+  align-items: center;
 }
 .category-filter-control:not(.has-multi) {
   grid-template-columns: minmax(0, 1fr);
@@ -1423,7 +1428,6 @@ body[data-theme="dark"] .visual-price-map {
   header { align-items: stretch; flex-direction: column; }
   .app-header { align-items: stretch; }
   .header-meta-row { gap: 2px 8px; }
-  .header-meta-row > span:first-child { min-width: 0; white-space: normal; }
   .summary { grid-template-columns: 1fr 1fr; }
   .grid, .filter-tools, .settings-grid, .inline-setting, .file-upload-row, .add-product-shared, .add-product-paths, .log-toolbar, .log-entry, .log-summary { grid-template-columns: 1fr; }
   table, thead, tbody, tr, th, td { display: block; }
@@ -4541,31 +4545,24 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         last_auto_base = state.get("last_auto_refresh_at") or state.get("last_auto_refresh_finished_at")
         next_run_value = add_seconds_iso(last_auto_base, get_auto_refresh_interval_seconds(config))
     mqtt = mqtt_status(config, state)
-    interval_text = (
-        f"Alle {settings.get('auto_refresh_interval_hours', '6')} Stunden"
-        if get_auto_refresh_enabled(config)
-        else "Auto-Refresh aus"
-    )
+    auto_enabled = get_auto_refresh_enabled(config)
+    interval_text = f"automatisch alle {settings.get('auto_refresh_interval_hours', '6')} Stunden" if auto_enabled else "aus"
+    auto_class = "ok" if auto_enabled else "off"
     mqtt_auto_class = "ok" if mqtt_auto_updates_enabled(config) else "off"
-    mqtt_auto_text = (
-        "MQTT bei Artikel-Aktualisierung aktiv"
-        if mqtt_auto_updates_enabled(config)
-        else "MQTT bei Artikel-Aktualisierung aus"
-    )
+    mqtt_auto_text = "aktiv" if mqtt_auto_updates_enabled(config) else "aus"
     last_auto_text = format_datetime_de(state.get("last_auto_refresh_finished_at") or state.get("last_auto_refresh_at"))
     next_auto_text = format_datetime_de(next_run_value) if next_run_value else "-"
     header_meta = (
         '<div class="header-meta">'
         '<div class="header-meta-row">'
-        '<span class="header-meta-label">Artikel automatisch:</span>'
-        f'<strong>{escape(last_auto_text)}</strong>'
-        '<span class="header-meta-separator">→</span>'
-        f'<strong>{escape(next_auto_text)}</strong>'
-        f'<span>{escape(interval_text)}</span>'
+        f'<span class="header-status"><span class="status-dot {escape(auto_class)}"></span>Artikel Abfrage</span>'
+        f'<span class="header-meta-separator">→</span><span>{escape(interval_text)}</span>'
+        f'<span class="header-meta-separator">|</span><strong>{escape(last_auto_text)}</strong>'
+        f'<span class="header-meta-separator">→</span><strong>{escape(next_auto_text)}</strong>'
         '</div>'
         '<div class="header-meta-row">'
-        f'<span><span class="status-dot {escape(mqtt["class"])}"></span>{escape(mqtt["text"])}</span>'
-        f'<span><span class="status-dot {escape(mqtt_auto_class)}"></span>{escape(mqtt_auto_text)}</span>'
+        f'<span class="header-status"><span class="status-dot {escape(mqtt["class"])}"></span>{escape(mqtt["text"])}</span>'
+        f'<span class="header-status"><span class="status-dot {escape(mqtt_auto_class)}"></span>MQTT Nachricht bei Updates → {escape(mqtt_auto_text)}</span>'
         '</div>'
         '</div>'
     )
