@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.36-dev"
+APP_VERSION = "0.1.37-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -141,26 +141,39 @@ header {
   gap: 20px;
   margin-bottom: 16px;
 }
+.app-header {
+  align-items: center;
+  margin-bottom: 12px;
+}
+.app-header h1 {
+  font-size: 27px;
+}
 h1 { margin: 0; font-size: 28px; line-height: 1.15; }
 h2 { margin: 0 0 10px; font-size: 17px; }
 .meta { color: var(--muted); margin-top: 5px; }
 .header-meta {
   display: grid;
-  gap: 2px;
+  gap: 3px;
 }
 .header-meta-row {
-  display: grid;
-  grid-template-columns: max-content auto auto;
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   align-items: center;
 }
 .header-meta-row > span:first-child {
-  min-width: 360px;
+  min-width: 0;
   white-space: nowrap;
 }
 .header-meta-row strong {
   color: var(--fg);
   font-weight: 650;
+}
+.header-meta-label {
+  color: var(--muted);
+}
+.header-meta-separator {
+  color: var(--muted);
 }
 .actions, .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .action-grid {
@@ -703,6 +716,26 @@ tr.is-target-price > td:first-child {
 .grid.market-grid { grid-template-columns: .7fr .7fr 1fr auto; }
 .grid.product-grid { grid-template-columns: 1fr 1.5fr .9fr 1fr auto; }
 .grid.filter-grid { grid-template-columns: 1fr .8fr 1.4fr auto auto auto; }
+.filter-panel {
+  padding: 12px;
+}
+.filter-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.filter-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.filter-tools {
+  display: grid;
+  grid-template-columns: 1fr .9fr minmax(240px, 1.55fr) auto auto auto;
+  gap: 10px;
+  align-items: end;
+}
 .category-filter-control {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1388,10 +1421,11 @@ body[data-theme="dark"] .visual-price-map {
 }
 @media (max-width: 820px) {
   header { align-items: stretch; flex-direction: column; }
-  .header-meta-row { grid-template-columns: 1fr; gap: 0; }
+  .app-header { align-items: stretch; }
+  .header-meta-row { gap: 2px 8px; }
   .header-meta-row > span:first-child { min-width: 0; white-space: normal; }
   .summary { grid-template-columns: 1fr 1fr; }
-  .grid, .settings-grid, .inline-setting, .file-upload-row, .add-product-shared, .add-product-paths, .log-toolbar, .log-entry, .log-summary { grid-template-columns: 1fr; }
+  .grid, .filter-tools, .settings-grid, .inline-setting, .file-upload-row, .add-product-shared, .add-product-paths, .log-toolbar, .log-entry, .log-summary { grid-template-columns: 1fr; }
   table, thead, tbody, tr, th, td { display: block; }
   thead { display: none; }
   tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
@@ -4513,18 +4547,25 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         else "Auto-Refresh aus"
     )
     mqtt_auto_class = "ok" if mqtt_auto_updates_enabled(config) else "off"
-    mqtt_auto_text = "MQTT Auto Updates aktiv" if mqtt_auto_updates_enabled(config) else "MQTT Auto Updates aus"
+    mqtt_auto_text = (
+        "MQTT bei Artikel-Aktualisierung aktiv"
+        if mqtt_auto_updates_enabled(config)
+        else "MQTT bei Artikel-Aktualisierung aus"
+    )
+    last_auto_text = format_datetime_de(state.get("last_auto_refresh_finished_at") or state.get("last_auto_refresh_at"))
+    next_auto_text = format_datetime_de(next_run_value) if next_run_value else "-"
     header_meta = (
         '<div class="header-meta">'
         '<div class="header-meta-row">'
-        '<span>Letztes automatisches Aktualisieren:</span>'
-        f'<strong>{escape(format_datetime_de(state.get("last_auto_refresh_finished_at") or state.get("last_auto_refresh_at")))}</strong>'
-        f'<span><span class="status-dot {escape(mqtt["class"])}"></span>{escape(mqtt["text"])}</span>'
+        '<span class="header-meta-label">Artikel automatisch:</span>'
+        f'<strong>{escape(last_auto_text)}</strong>'
+        '<span class="header-meta-separator">→</span>'
+        f'<strong>{escape(next_auto_text)}</strong>'
+        f'<span>{escape(interval_text)}</span>'
         '</div>'
         '<div class="header-meta-row">'
-        '<span>Nächstes automatisches Aktualisieren:</span>'
-        f'<strong>{escape(format_datetime_de(next_run_value) if next_run_value else "-")}</strong>'
-        f'<span>{escape(interval_text)} · <span class="status-dot {escape(mqtt_auto_class)}"></span>{escape(mqtt_auto_text)}</span>'
+        f'<span><span class="status-dot {escape(mqtt["class"])}"></span>{escape(mqtt["text"])}</span>'
+        f'<span><span class="status-dot {escape(mqtt_auto_class)}"></span>{escape(mqtt_auto_text)}</span>'
         '</div>'
         '</div>'
     )
@@ -5614,7 +5655,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
 </head>
 <body data-theme="{escape(theme)}">
   <main>
-    <header>
+    <header class="app-header">
       <div>
         <h1>{escape(APP_NAME)}</h1>
         <div class="meta">{header_meta}</div>
@@ -5640,9 +5681,9 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
       <div class="progress-line"><div data-progress-bar style="--pct: {pct}%"></div></div>
       <div class="small">Wartezeit zwischen einzelnen Shop-Abfragen: {escape(str(settings.get("refresh_delay_seconds", "5")))} Sekunden</div>
     </section>
-    <section class="panel">
-      <div class="panel-title-row"><h2>Filter</h2>{quick_category_html}</div>
-      <form class="grid filter-grid" method="get" action="/">
+    <section class="panel filter-panel">
+      <div class="filter-head"><h2>Filter</h2>{quick_category_html}</div>
+      <form class="filter-tools" method="get" action="/">
         {grouped_hidden}
         {target_filter_hidden}
         {per_page_hidden}
@@ -6485,7 +6526,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           <h3>Auto Updates</h3>
           <div class="settings-grid align-start" style="margin-top: 10px">
             <div>
-              <label class="toggle-line"><input type="checkbox" name="mqtt_auto_updates_enabled" value="true" {'checked' if mqtt_auto_enabled else ''}> MQTT Auto Updates aktiv</label>
+              <label class="toggle-line"><input type="checkbox" name="mqtt_auto_updates_enabled" value="true" {'checked' if mqtt_auto_enabled else ''}> MQTT bei Artikel-Aktualisierung aktiv</label>
               <div class="small">Wenn ausgeschaltet, senden manuelle/automatische Aktualisierungen und Artikeländerungen keine MQTT-Updates. Manuelle MQTT-Buttons und Löschen bleiben möglich.</div>
             </div>
             <div>
