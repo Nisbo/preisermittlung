@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.38-dev"
+APP_VERSION = "0.1.39-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -62,6 +62,12 @@ APP_LOG_PATH = Path(__file__).with_name("tmp").joinpath("app.log")
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 PAGE_SIZE_OPTIONS = [10, 25, 50, 75, 100]
+STATUS_FILTERS = {
+    "ok": "OK",
+    "error": "Fehler",
+    "disabled": "Deaktiviert",
+    "no_offer": "Kein Angebot",
+}
 app = Flask(__name__)
 
 
@@ -729,7 +735,7 @@ tr.is-target-price > td:first-child {
 }
 .filter-tools {
   display: grid;
-  grid-template-columns: 1fr .9fr minmax(240px, 1.55fr) auto auto auto;
+  grid-template-columns: 1fr .9fr minmax(240px, 1.55fr) auto auto auto auto;
   gap: 10px;
   align-items: center;
 }
@@ -975,6 +981,14 @@ body[data-theme="dark"] .visual-price-map {
 .pagination-ellipsis {
   color: var(--muted);
   padding: 0 4px;
+}
+.sum-footer td {
+  background: color-mix(in srgb, var(--panel) 94%, var(--fg) 6%);
+  border-top: 2px solid var(--line);
+  font-weight: 700;
+}
+.sum-footer .price {
+  color: var(--fg);
 }
 .refresh-box {
   display: grid;
@@ -2067,6 +2081,16 @@ def target_price_filter_enabled(config: Dict[str, Any]) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def sum_footer_enabled(config: Dict[str, Any]) -> bool:
+    raw = settings_value(config, "sum_footer_enabled", "true").strip().lower()
+    return raw in {"1", "true", "yes", "on", "ja"}
+
+
+def allow_all_page_size(config: Dict[str, Any]) -> bool:
+    raw = settings_value(config, "allow_all_page_size", "false").strip().lower()
+    return raw in {"1", "true", "yes", "on", "ja"}
+
+
 def mqtt_badge_enabled(config: Dict[str, Any]) -> bool:
     raw = settings_value(config, "mqtt_badge_enabled", "false").strip().lower()
     return raw in {"1", "true", "yes", "on", "ja"}
@@ -2102,6 +2126,17 @@ def is_no_offer_error(error: Any) -> bool:
 
 def product_no_offer(item_state: Dict[str, Any]) -> bool:
     return str(item_state.get("offer_status") or "").lower() == "missing" or is_no_offer_error(item_state.get("last_error"))
+
+
+def product_status_key(product: Dict[str, Any]) -> str:
+    item_state = product.get("state") or {}
+    if not product_enabled(product):
+        return "disabled"
+    if product_no_offer(item_state):
+        return "no_offer"
+    if item_state.get("last_error"):
+        return "error"
+    return "ok"
 
 
 def target_price_badge_html(
@@ -2226,6 +2261,7 @@ def list_url_with_updates(updates: Dict[str, Any]) -> str:
         "mqtt_product",
         "refresh_started",
         "rename_category",
+        "status_filter",
         "toggle_hit_app_price",
     }
     query = []
@@ -2265,6 +2301,7 @@ def list_hidden_inputs(updates: Optional[Dict[str, Any]] = None) -> str:
         "mqtt_product",
         "refresh_started",
         "rename_category",
+        "status_filter",
         "toggle_hit_app_price",
     }
     parts = []
@@ -3179,10 +3216,12 @@ def default_home_page_size(config: Dict[str, Any]) -> int:
     return value if value in PAGE_SIZE_OPTIONS else 50
 
 
-def page_size_from_args(config: Dict[str, Any]) -> tuple[int, str]:
+def page_size_from_args(config: Dict[str, Any]) -> tuple[Optional[int], str]:
     raw = (request.args.get("per_page") or "standard").strip().lower()
     if raw == "standard":
         return default_home_page_size(config), "standard"
+    if raw == "all" and allow_all_page_size(config):
+        return None, "all"
     try:
         value = int(raw)
     except ValueError:
@@ -3206,6 +3245,21 @@ def selected_category_ids_from_args(valid_ids: set[str]) -> List[str]:
         if value and value in valid_ids and value not in selected:
             selected.append(value)
     return selected
+
+
+def selected_statuses_from_args() -> List[str]:
+    values: List[str] = []
+    for raw in request.args.getlist("status"):
+        values.extend(part.strip() for part in str(raw).split(","))
+    selected = []
+    for value in values:
+        if value in STATUS_FILTERS and value not in selected:
+            selected.append(value)
+    return selected or list(STATUS_FILTERS)
+
+
+def status_filter_is_default(selected_statuses: List[str]) -> bool:
+    return set(selected_statuses) == set(STATUS_FILTERS)
 
 
 def product_enabled(product: Dict[str, Any]) -> bool:
@@ -3259,6 +3313,12 @@ def save_settings_from_form(config: Dict[str, Any]) -> Dict[str, Any]:
     if "home_settings_present" in request.form:
         page_size_raw = request.form.get("home_page_size", "50").strip()
         settings["home_page_size"] = page_size_raw if page_size_raw in {str(value) for value in PAGE_SIZE_OPTIONS} else "50"
+        settings["allow_all_page_size"] = (
+            "true" if request.form.get("allow_all_page_size") == "true" else "false"
+        )
+        settings["sum_footer_enabled"] = (
+            "true" if request.form.get("sum_footer_enabled") == "true" else "false"
+        )
         settings["multi_category_filter_enabled"] = (
             "true" if request.form.get("multi_category_filter_enabled") == "true" else "false"
         )
@@ -4358,7 +4418,32 @@ def render_toggle_hit_app_price_dialog(market: Optional[Dict[str, Any]]) -> str:
     )
 
 
-def render_product_table(rows: List[str]) -> str:
+def visible_products_sum_cents(products: List[Dict[str, Any]]) -> int:
+    total = 0
+    for product in products:
+        item_state = product.get("state") or {}
+        if product_no_offer(item_state):
+            continue
+        try:
+            total += int(item_state.get("price_cents") or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def render_sum_footer(label: str, products: List[Dict[str, Any]], enabled: bool) -> str:
+    if not enabled:
+        return ""
+    return (
+        '<tfoot><tr class="sum-footer">'
+        f'<td colspan="2">{escape(label)}</td>'
+        f'<td class="price">{escape(format_cents(visible_products_sum_cents(products)))}</td>'
+        '<td colspan="5"></td>'
+        '</tr></tfoot>'
+    )
+
+
+def render_product_table(rows: List[str], footer_html: str = "") -> str:
     return (
         "<table>"
         '<thead><tr><th><button class="sort-button" data-sort="0">Produkt</button></th>'
@@ -4369,7 +4454,7 @@ def render_product_table(rows: List[str]) -> str:
         '<th><button class="sort-button" data-sort="5">Geändert</button></th>'
         '<th><button class="sort-button" data-sort="6">Status</button></th>'
         "<th>Aktionen</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
+        f"<tbody>{''.join(rows)}</tbody>{footer_html}</table>"
     )
 
 
@@ -4398,6 +4483,7 @@ def render_pagination(
     per_page: int,
     per_page_choice: str,
     default_per_page: int,
+    allow_all: bool,
     enabled: bool,
 ) -> str:
     if not enabled:
@@ -4407,6 +4493,8 @@ def render_pagination(
     end = min(total_items, page * per_page)
     size_options = [("standard", f"Standard ({default_per_page})")]
     size_options.extend((str(value), str(value)) for value in PAGE_SIZE_OPTIONS)
+    if allow_all:
+        size_options.append(("all", "Alle"))
     size_select = "".join(
         f'<option value="{escape(value)}" {"selected" if per_page_choice == value else ""}>{escape(label)}</option>'
         for value, label in size_options
@@ -4444,7 +4532,7 @@ def render_pagination(
         f'<select name="per_page" onchange="this.form.submit()">{size_select}</select></div>'
         f'<span class="small">{start}-{end} von {total_items} Artikel</span>'
         '</form>'
-        f'<nav class="pagination-links" aria-label="Seitennavigation">{"".join(page_links)}</nav>'
+        f'<nav class="pagination-links" aria-label="Seitennavigation">{"".join(page_links) if per_page_choice != "all" else ""}</nav>'
         '</div>'
     )
 
@@ -4487,6 +4575,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     target_filter = request.args.get("target") or "all"
     if target_filter not in {"all", "hit"}:
         target_filter = "all"
+    selected_statuses = selected_statuses_from_args()
     search_text = request.args.get("q", "").strip()
     grouped_view = request.args.get("view") == "grouped" or (not request.args and default_home_view(config) == "grouped")
     categories_by_id_for_filter = category_lookup(config)
@@ -4519,8 +4608,11 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             ).lower()
         )
         and (target_filter != "hit" or product_below_target_price(product))
+        and product_status_key(product) in selected_statuses
     ]
     per_page, per_page_choice = page_size_from_args(config)
+    if per_page is None:
+        per_page = max(1, len(products))
     default_per_page = default_home_page_size(config)
     page_count = max(1, (len(products) + per_page - 1) // per_page)
     try:
@@ -4536,10 +4628,9 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         per_page,
         per_page_choice,
         default_per_page,
+        allow_all_page_size(config),
         not grouped_view,
     )
-    total = sum(int(product["state"].get("price_cents") or 0) for product in products)
-    changed_at = latest_change_at(products)
     next_run_value = None
     if get_auto_refresh_enabled(config):
         last_auto_base = state.get("last_auto_refresh_at") or state.get("last_auto_refresh_finished_at")
@@ -4727,6 +4818,10 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     category_dialog_hidden_inputs = ""
     if selected_shop != "all":
         category_dialog_hidden_inputs += f'<input type="hidden" name="shop" value="{escape(selected_shop)}">'
+    if not status_filter_is_default(selected_statuses):
+        category_dialog_hidden_inputs += "".join(
+            f'<input type="hidden" name="status" value="{escape(status)}">' for status in selected_statuses
+        )
     if selected_category_group:
         category_dialog_hidden_inputs += f'<input type="hidden" name="category_group" value="{escape(selected_category_group)}">'
     if search_text:
@@ -4756,6 +4851,29 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         if multi_category_enabled and request.args.get("categories_filter") == "1"
         else ""
     )
+    status_choice_items = "".join(
+        '<label class="category-choice">'
+        f'<span class="category-choice-main">{escape(label)}</span>'
+        f'<input type="checkbox" name="status" value="{escape(status)}" {"checked" if status in selected_statuses else ""}>'
+        '</label>'
+        for status, label in STATUS_FILTERS.items()
+    )
+    status_filter_dialog = (
+        '<div class="dialog-backdrop" open><section class="dialog">'
+        '<div class="dialog-head"><div><h2>Status filtern</h2>'
+        '<div class="small">Wähle aus, welche Artikelzustände in der Liste sichtbar sein sollen.</div>'
+        f'</div><a class="button icon-only" href="{escape(list_url_with_updates({"status_filter": None}))}" aria-label="Schließen">×</a></div>'
+        '<form method="get" action="/">'
+        f'{list_hidden_inputs({"page": "1", "status": None, "status_filter": None})}'
+        f'<div class="category-choice-list">{status_choice_items}</div>'
+        '<div class="actions" style="margin-top: 14px">'
+        '<button class="primary" type="submit">Übernehmen</button>'
+        f'<a class="button" href="{escape(list_url_with_updates({"page": "1", "status": None, "status_filter": None}))}">Alle Status</a>'
+        f'<a class="button" href="{escape(list_url_with_updates({"status_filter": None}))}">Abbrechen</a>'
+        '</div></form></section></div>'
+        if request.args.get("status_filter") == "1"
+        else ""
+    )
     base_filter_params = {}
     if selected_multi_categories:
         for category_id in selected_multi_categories:
@@ -4766,6 +4884,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         base_filter_params["category"] = selected_category
     if selected_shop != "all":
         base_filter_params["shop"] = selected_shop
+    if not status_filter_is_default(selected_statuses):
+        base_filter_params["status"] = selected_statuses
     if target_filter != "all":
         base_filter_params["target"] = target_filter
     if search_text:
@@ -4784,6 +4904,17 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         f'<a class="button{" is-active" if target_filter == "hit" else ""}" href="{escape(target_filter_href)}">{icon("target")} Wunschpreis</a>'
         if target_price_filter_enabled(config)
         else ""
+    )
+    status_filter_active = not status_filter_is_default(selected_statuses)
+    status_filter_label = "Status" if not status_filter_active else f"Status {len(selected_statuses)}/{len(STATUS_FILTERS)}"
+    status_filter_button = (
+        f'<a class="button{" is-active" if status_filter_active else ""}" href="{escape(list_url_with_updates({"status_filter": "1"}))}">'
+        f'{icon("list")} {escape(status_filter_label)}</a>'
+    )
+    status_filter_hidden = "".join(
+        f'<input type="hidden" name="status" value="{escape(status)}">'
+        for status in selected_statuses
+        if status_filter_active
     )
     grouped_hidden = '<input type="hidden" name="view" value="grouped">' if grouped_view else ""
     target_filter_hidden = '<input type="hidden" name="target" value="hit">' if target_filter == "hit" else ""
@@ -5163,6 +5294,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
 
     rows = []
     rows_by_category: Dict[str, List[str]] = {category["id"]: [] for category in categories}
+    products_by_category: Dict[str, List[Dict[str, Any]]] = {category["id"]: [] for category in categories}
     categories_by_id = category_lookup(config)
     image_dialogs = []
     history_dialogs = []
@@ -5443,6 +5575,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         )
         rows.append(row_html)
         rows_by_category.setdefault(category_id, []).append(row_html)
+        products_by_category.setdefault(category_id, []).append(product)
         if product_provider(config, product) and provider_kind(product_provider(config, product)) == "prospect" and match_count > 1:
             match_items = []
             extra_matches = [
@@ -5575,13 +5708,13 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
                 '<section class="category-section">'
                 f'<details{details_open}>'
                 f'<summary><h2>{escape(category.get("name") or category["id"])}</h2></summary>'
-                f'{render_product_table(category_rows_for_table)}'
+                f'{render_product_table(category_rows_for_table, render_sum_footer("Kategorie-Summe", products_by_category.get(category["id"], []), sum_footer_enabled(config)))}'
                 '</details>'
                 '</section>'
             )
         table_html = "".join(sections) or '<div class="panel small">Keine Artikel gefunden.</div>'
     else:
-        table_html = render_product_table(rows)
+        table_html = render_product_table(rows, render_sum_footer("Summe angezeigte Artikel", display_products, sum_footer_enabled(config)))
 
     market_rows = []
     for market in markets:
@@ -5641,6 +5774,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
     notice_html = render_notice_html(notice)
     active_products = [product for product in products if product_enabled(product)]
+    target_products = [product for product in active_products if product_target_price_cents(product) is not None]
+    target_hit_count = sum(1 for product in target_products if product_below_target_price(product))
     progress_hidden = "" if progress.get("running") else " hidden"
     return f"""<!doctype html>
 <html lang="de">
@@ -5669,7 +5804,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
       <div class="metric"><div class="metric-head"><div><span>Märkte</span><strong>{len(markets)}</strong></div><div class="row-actions"><a class="button icon-small" href="/?market_dialog=1" title="Markt hinzufügen" aria-label="Markt hinzufügen">{icon('plus')}</a><a class="button icon-small" href="/?markets_dialog=1" title="Märkte verwalten" aria-label="Märkte verwalten">{icon('settings')}</a></div></div></div>
       <div class="metric"><div class="metric-head"><div><span>Kategorien</span><strong>{len(categories)}</strong></div><div class="row-actions"><a class="button icon-small" href="/?categories_dialog=1" title="Kategorie hinzufügen" aria-label="Kategorie hinzufügen">{icon('plus')}</a><a class="button icon-small" href="/?categories_dialog=1" title="Kategorien verwalten" aria-label="Kategorien verwalten">{icon('settings')}</a></div></div></div>
       <div class="metric"><div class="metric-head"><div><span>Produkte</span><strong>{len(active_products)} / {len(all_products)}</strong></div><div class="row-actions"><a class="button icon-small" href="/?add_product=1" title="Produkt hinzufügen" aria-label="Produkt hinzufügen">{icon('plus')}</a><a class="button icon-small" href="/?add_pdf=1" title="PDF-Suchwort hinzufügen" aria-label="PDF-Suchwort hinzufügen">{icon('pdf')}</a></div></div></div>
-      <div class="metric"><span>Summe</span><strong>{escape(format_cents(total))}</strong></div>
+      <div class="metric"><span>Wunschpreise</span><strong>{target_hit_count} / {len(target_products)}</strong></div>
       <div class="metric"><span>Zuletzt aktualisiert</span><strong>{escape(format_datetime_de(state.get("last_refresh_finished_at")))}</strong></div>
     </section>
     <section class="panel" data-progress-box{progress_hidden}>
@@ -5683,6 +5818,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
       <form class="filter-tools" method="get" action="/">
         {grouped_hidden}
         {target_filter_hidden}
+        {status_filter_hidden}
         {per_page_hidden}
         <div class="category-filter-control{' has-multi' if multi_category_enabled else ''}">
           {category_multi_button}
@@ -5691,6 +5827,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         <div class="field"><label>Shop</label><select name="shop" onchange="this.form.submit()">{shop_filter_options}</select></div>
         <div class="field"><label>Suchwort</label><input data-live-search name="q" value="{escape(search_text)}" placeholder="Produkt, Artikelnummer oder Kennung"></div>
         {target_filter_button}
+        {status_filter_button}
         <a class="button{all_active_class}" href="/?view=all">{icon('list')} Alle</a>
         {group_toggle_control}
       </form>
@@ -5786,6 +5923,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     </section>
   </div>
   {multi_category_dialog}
+  {status_filter_dialog}
   <div class="dialog-backdrop"{' open' if show_add_product_dialog else ''}>
     <section class="dialog">
       <div class="dialog-head">
@@ -6384,6 +6522,14 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
               {home_page_size_options}
             </select>
             <div class="small">Gilt für die normale Listenansicht. Gruppierte Ansichten bleiben vollständig und einklappbar.</div>
+          </div>
+          <div class="field" style="margin-top: 10px">
+            <label class="toggle-line"><input type="checkbox" name="allow_all_page_size" value="true" {'checked' if allow_all_page_size(config) else ''}> „Alle“ in Seitenauswahl erlauben</label>
+            <div class="small">Wenn aktiv, kann die Listenansicht alle Treffer auf einmal anzeigen. Bei vielen Artikeln oder PDF-Zusatztreffern kann die Seite dadurch deutlich schwerer werden.</div>
+          </div>
+          <div class="field" style="margin-top: 10px">
+            <label class="toggle-line"><input type="checkbox" name="sum_footer_enabled" value="true" {'checked' if sum_footer_enabled(config) else ''}> Summenzeilen anzeigen</label>
+            <div class="small">Zeigt in der Listenansicht die Summe der angezeigten Artikel und in der Gruppierung die Kategorie-Summe.</div>
           </div>
           <div class="field" style="margin-top: 10px">
             <label class="toggle-line"><input type="checkbox" name="multi_category_filter_enabled" value="true" {'checked' if multi_category_filter_enabled(config) else ''}> Mehrfachauswahl für Kategorien aktivieren</label>
