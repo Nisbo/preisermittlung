@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.39-dev"
+APP_VERSION = "0.1.40-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -989,6 +989,17 @@ body[data-theme="dark"] .visual-price-map {
 }
 .sum-footer .price {
   color: var(--fg);
+}
+.sum-refresh-button {
+  min-height: 30px;
+  background: color-mix(in srgb, var(--panel) 86%, var(--fg) 14%);
+  border-color: var(--line);
+  color: var(--fg);
+  gap: 5px;
+}
+.sum-refresh-button svg {
+  width: 14px;
+  height: 14px;
 }
 .refresh-box {
   display: grid;
@@ -2346,6 +2357,7 @@ def icon(name: str) -> str:
         "search": '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
         "home": '<path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>',
         "list": '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+        "filter": '<path d="M4 5h16"/><path d="M7 12h10"/><path d="M10 19h4"/>',
         "target": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/>',
         "chart": '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/><circle cx="7" cy="15" r="1"/><circle cx="11" cy="11" r="1"/><circle cx="14" cy="14" r="1"/><circle cx="19" cy="7" r="1"/>',
         "mqtt": '<path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/>',
@@ -4112,6 +4124,7 @@ def refresh_worker(
     product_id: Optional[str] = None,
     refresh_kind: str = "manual",
     provider_ids: Optional[List[str]] = None,
+    category_ids: Optional[List[str]] = None,
 ) -> None:
     global progress
     try:
@@ -4125,7 +4138,10 @@ def refresh_worker(
             if provider_ids:
                 selected_providers = set(provider_ids)
                 products = [product for product in products if product_provider(config, product) in selected_providers]
-            elif refresh_kind == "auto" and not get_auto_refresh_manual_pdfs_enabled(config):
+            if category_ids:
+                selected_categories = set(category_ids)
+                products = [product for product in products if product_category_id(product) in selected_categories]
+            if refresh_kind == "auto" and not get_auto_refresh_manual_pdfs_enabled(config):
                 products = [product for product in products if product_provider(config, product) != "manual_pdf"]
         delay = get_delay_seconds(config)
 
@@ -4199,6 +4215,7 @@ def start_refresh(
     product_id: Optional[str] = None,
     refresh_kind: str = "manual",
     provider_ids: Optional[List[str]] = None,
+    category_ids: Optional[List[str]] = None,
 ) -> bool:
     global refresh_thread
     with state_lock:
@@ -4207,7 +4224,7 @@ def start_refresh(
         progress.update({"running": True, "done": 0, "total": 0, "error": None})
         refresh_thread = threading.Thread(
             target=refresh_worker,
-            args=(product_id, refresh_kind, provider_ids),
+            args=(product_id, refresh_kind, provider_ids, category_ids),
             daemon=True,
         )
         refresh_thread.start()
@@ -4431,14 +4448,29 @@ def visible_products_sum_cents(products: List[Dict[str, Any]]) -> int:
     return total
 
 
-def render_sum_footer(label: str, products: List[Dict[str, Any]], enabled: bool) -> str:
+def render_sum_footer(
+    label: str,
+    products: List[Dict[str, Any]],
+    enabled: bool,
+    category_id: Optional[str] = None,
+) -> str:
     if not enabled:
         return ""
+    refresh_form = ""
+    if category_id:
+        refresh_form = (
+            f'<form method="post" action="/categories/{escape(category_id)}/refresh">'
+            f'<input type="hidden" name="return_to" value="{escape(request.full_path)}">'
+            f'<button class="sum-refresh-button" type="submit" title="Alle Artikel in der Kategorie aktualisieren" '
+            f'aria-label="Alle Artikel in der Kategorie aktualisieren">{icon("refresh")} Alle</button>'
+            '</form>'
+        )
     return (
         '<tfoot><tr class="sum-footer">'
         f'<td colspan="2">{escape(label)}</td>'
         f'<td class="price">{escape(format_cents(visible_products_sum_cents(products)))}</td>'
-        '<td colspan="5"></td>'
+        '<td colspan="4"></td>'
+        f'<td>{refresh_form}</td>'
         '</tr></tfoot>'
     )
 
@@ -4901,7 +4933,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         target_filter_params["view"] = "grouped"
     target_filter_href = "/?" + urllib.parse.urlencode(target_filter_params, doseq=True)
     target_filter_button = (
-        f'<a class="button{" is-active" if target_filter == "hit" else ""}" href="{escape(target_filter_href)}">{icon("target")} Wunschpreis</a>'
+        f'<a class="button icon-only{" is-active" if target_filter == "hit" else ""}" href="{escape(target_filter_href)}" '
+        f'title="Nur erreichte Wunschpreise anzeigen" aria-label="Nur erreichte Wunschpreise anzeigen">{icon("target")}</a>'
         if target_price_filter_enabled(config)
         else ""
     )
@@ -4909,7 +4942,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     status_filter_label = "Status" if not status_filter_active else f"Status {len(selected_statuses)}/{len(STATUS_FILTERS)}"
     status_filter_button = (
         f'<a class="button{" is-active" if status_filter_active else ""}" href="{escape(list_url_with_updates({"status_filter": "1"}))}">'
-        f'{icon("list")} {escape(status_filter_label)}</a>'
+        f'{icon("filter")} {escape(status_filter_label)}</a>'
     )
     status_filter_hidden = "".join(
         f'<input type="hidden" name="status" value="{escape(status)}">'
@@ -5708,7 +5741,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
                 '<section class="category-section">'
                 f'<details{details_open}>'
                 f'<summary><h2>{escape(category.get("name") or category["id"])}</h2></summary>'
-                f'{render_product_table(category_rows_for_table, render_sum_footer("Kategorie-Summe", products_by_category.get(category["id"], []), sum_footer_enabled(config)))}'
+                f'{render_product_table(category_rows_for_table, render_sum_footer("Kategorie-Summe", products_by_category.get(category["id"], []), sum_footer_enabled(config), category["id"]))}'
                 '</details>'
                 '</section>'
             )
@@ -7985,6 +8018,20 @@ def refresh_product(product_id: str) -> Response:
     target = local_url_without_query(target, "done")
     target = local_url_with_query(target, "refresh_started", refresh_marker())
     target = local_url_with_fragment(target, f"product-{product_id}")
+    return redirect(target)
+
+
+@app.post("/categories/<category_id>/refresh")
+def refresh_category_products(category_id: str) -> Response:
+    config = load_config()
+    valid_ids = {category["id"] for category in categories_from_config(config)}
+    if category_id not in valid_ids:
+        set_notice("Kategorie nicht gefunden.")
+    else:
+        start_refresh(category_ids=[category_id])
+    target = safe_local_redirect_target(request.form.get("return_to", ""), url_for("index", view="grouped"))
+    target = local_url_without_query(target, "done")
+    target = local_url_with_query(target, "refresh_started", refresh_marker())
     return redirect(target)
 
 
