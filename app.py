@@ -54,12 +54,13 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.43-dev"
+APP_VERSION = "0.1.44-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
 APP_LOG_PATH = Path(__file__).with_name("tmp").joinpath("app.log")
+VERSION_INFO_PATH = Path(__file__).with_name("tmp").joinpath("version.json")
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 PAGE_SIZE_OPTIONS = [10, 25, 50, 75, 100]
@@ -2995,6 +2996,14 @@ def update_service_status() -> Dict[str, Any]:
 
 
 def git_metadata() -> Dict[str, str]:
+    try:
+        data = json.loads(VERSION_INFO_PATH.read_text(encoding="utf-8"))
+        branch = str(data.get("branch") or "").strip()
+        commit = str(data.get("commit") or "").strip()
+        if branch or commit:
+            return {"branch": branch or "-", "commit": commit or "-"}
+    except (OSError, ValueError, TypeError):
+        pass
     git = shutil.which("git")
     if not git:
         return {"branch": "-", "commit": "-"}
