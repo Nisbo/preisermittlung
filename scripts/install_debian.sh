@@ -45,23 +45,6 @@ echo "Internal Gunicorn: ${INTERNAL_HOST}:${INTERNAL_PORT}"
 echo "Public nginx port: ${PUBLIC_PORT}"
 echo "nginx upload limit: ${CLIENT_MAX_BODY_SIZE}"
 
-write_version_info() {
-  local repo_dir=""
-  local branch="-"
-  local commit="-"
-  if [[ -d "${APP_DIR}/.git" ]]; then
-    repo_dir="${APP_DIR}"
-  elif [[ -d "${SOURCE_DIR}/.git" ]]; then
-    repo_dir="${SOURCE_DIR}"
-  fi
-  if [[ -n "${repo_dir}" ]] && command -v git >/dev/null 2>&1; then
-    branch="$(git -c safe.directory="${repo_dir}" -C "${repo_dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '-')"
-    commit="$(git -c safe.directory="${repo_dir}" -C "${repo_dir}" rev-parse --short HEAD 2>/dev/null || printf '-')"
-  fi
-  install -d -m 0755 "${APP_DIR}/tmp"
-  printf '{\n  "branch": "%s",\n  "commit": "%s"\n}\n' "${branch}" "${commit}" > "${APP_DIR}/tmp/version.json"
-}
-
 apt update
 apt install -y \
   git \
@@ -102,7 +85,6 @@ fi
 
 install -d -m 0755 "${APP_DIR}/generated" "${APP_DIR}/manual_pdfs" "${APP_DIR}/tmp"
 install -d -m 0755 "${APP_DIR}/.browser-cache" "${APP_DIR}/.pdf-cache" "${APP_DIR}/.playwright-browsers"
-write_version_info
 
 if [[ ! -f "${APP_DIR}/config.yaml" ]]; then
   cat > "${APP_DIR}/config.yaml" <<'EOF'

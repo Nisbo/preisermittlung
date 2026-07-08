@@ -20,20 +20,6 @@ cd "${APP_DIR}"
 
 echo "Updating ${APP_NAME} in ${APP_DIR}"
 
-write_version_info() {
-  local branch="-"
-  local commit="-"
-  if [[ -d ".git" ]] && command -v git >/dev/null 2>&1; then
-    branch="$(git -c safe.directory="${APP_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '-')"
-    commit="$(git -c safe.directory="${APP_DIR}" rev-parse --short HEAD 2>/dev/null || printf '-')"
-  fi
-  install -d -m 0755 tmp
-  printf '{\n  "branch": "%s",\n  "commit": "%s"\n}\n' "${branch}" "${commit}" > tmp/version.json
-  if id "${RUN_USER}" >/dev/null 2>&1; then
-    chown "${RUN_USER}:${RUN_USER}" tmp/version.json
-  fi
-}
-
 if ! command -v sudo >/dev/null 2>&1; then
   apt update
   apt install -y sudo
@@ -45,8 +31,6 @@ if [[ -d ".git" ]]; then
 else
   echo "This installation is not a git checkout. Skipping git pull."
 fi
-
-write_version_info
 
 if [[ ! -d ".venv" ]]; then
   python3 -m venv .venv

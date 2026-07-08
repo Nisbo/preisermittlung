@@ -54,13 +54,12 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.44-dev"
+APP_VERSION = "0.1.45-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
 APP_LOG_PATH = Path(__file__).with_name("tmp").joinpath("app.log")
-VERSION_INFO_PATH = Path(__file__).with_name("tmp").joinpath("version.json")
 DEFAULT_CATEGORY_ID = "allgemein"
 DEFAULT_CATEGORY_NAME = "Allgemein"
 PAGE_SIZE_OPTIONS = [10, 25, 50, 75, 100]
@@ -257,6 +256,29 @@ input, select { width: 100%; padding: 0 10px; background: white; color: var(--fg
 }
 .metric span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 .metric strong { font-size: 16px; }
+.version-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.version-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  min-width: 0;
+}
+.version-item span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.version-item strong {
+  display: block;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
 .panel { padding: 14px; margin-bottom: 14px; }
 .progress-line {
   height: 10px;
@@ -2996,20 +3018,13 @@ def update_service_status() -> Dict[str, Any]:
 
 
 def git_metadata() -> Dict[str, str]:
-    try:
-        data = json.loads(VERSION_INFO_PATH.read_text(encoding="utf-8"))
-        branch = str(data.get("branch") or "").strip()
-        commit = str(data.get("commit") or "").strip()
-        if branch or commit:
-            return {"branch": branch or "-", "commit": commit or "-"}
-    except (OSError, ValueError, TypeError):
-        pass
     git = shutil.which("git")
     if not git:
         return {"branch": "-", "commit": "-"}
+    app_dir = str(Path(__file__).parent)
     commands = {
-        "branch": [git, "-C", str(Path(__file__).parent), "rev-parse", "--abbrev-ref", "HEAD"],
-        "commit": [git, "-C", str(Path(__file__).parent), "rev-parse", "--short", "HEAD"],
+        "branch": [git, "-c", f"safe.directory={app_dir}", "-C", app_dir, "rev-parse", "--abbrev-ref", "HEAD"],
+        "commit": [git, "-c", f"safe.directory={app_dir}", "-C", app_dir, "rev-parse", "--short", "HEAD"],
     }
     result: Dict[str, str] = {}
     for key, command in commands.items():
@@ -6896,9 +6911,11 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
       <div class="settings-grid align-start">
         <div class="settings-card">
           <h3>Installierte Version</h3>
-          <div class="metric"><span>{escape(APP_NAME)}</span><strong>v{escape(APP_VERSION)}</strong></div>
-          <div class="metric"><span>Branch</span><strong>{escape(git_info.get("branch", "-"))}</strong></div>
-          <div class="metric"><span>Commit</span><strong>{escape(git_info.get("commit", "-"))}</strong></div>
+          <div class="version-grid">
+            <div class="version-item"><span>App</span><strong>{escape(APP_NAME)} v{escape(APP_VERSION)}</strong></div>
+            <div class="version-item"><span>Branch</span><strong>{escape(git_info.get("branch", "-"))}</strong></div>
+            <div class="version-item"><span>Commit</span><strong>{escape(git_info.get("commit", "-"))}</strong></div>
+          </div>
           <div class="small">Diese Anzeige kommt aus der aktuell laufenden App.</div>
         </div>
         <div class="settings-card settings-card-full">
