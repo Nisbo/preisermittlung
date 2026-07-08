@@ -54,7 +54,8 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.42-dev"
+APP_VERSION = "0.1.43-dev"
+GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -2357,6 +2358,7 @@ def icon(name: str) -> str:
         "search": '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
         "home": '<path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>',
         "list": '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+        "list-tree": '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h1a2 2 0 0 1 2 2v8a2 2 0 0 0 2 2"/><path d="M3 12h3"/>',
         "tags": '<path d="M9 5H5a2 2 0 0 0-2 2v4.6a2 2 0 0 0 .6 1.4l7.4 7.4a2 2 0 0 0 2.8 0l4.6-4.6a2 2 0 0 0 0-2.8L11 5.6A2 2 0 0 0 9.6 5Z"/><path d="M6 9h.01"/><path d="m15 5 6 6"/>',
         "filter": '<path d="M4 5h16"/><path d="M7 12h10"/><path d="M10 19h4"/>',
         "target": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/>',
@@ -2990,6 +2992,32 @@ def update_service_status() -> Dict[str, Any]:
     except (OSError, subprocess.SubprocessError) as exc:
         status["state"] = f"Status konnte nicht gelesen werden: {exc}"
     return status
+
+
+def git_metadata() -> Dict[str, str]:
+    git = shutil.which("git")
+    if not git:
+        return {"branch": "-", "commit": "-"}
+    commands = {
+        "branch": [git, "-C", str(Path(__file__).parent), "rev-parse", "--abbrev-ref", "HEAD"],
+        "commit": [git, "-C", str(Path(__file__).parent), "rev-parse", "--short", "HEAD"],
+    }
+    result: Dict[str, str] = {}
+    for key, command in commands.items():
+        try:
+            completed = subprocess.run(command, text=True, capture_output=True, timeout=5, check=False)
+            value = (completed.stdout or "").strip() if completed.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            value = ""
+        result[key] = value or "-"
+    return result
+
+
+def app_footer_html() -> str:
+    return (
+        f'<footer class="app-footer"><span>{escape(APP_NAME)}</span>'
+        f'<a href="{escape(GITHUB_REPO_URL)}" target="_blank" rel="noopener">v{escape(APP_VERSION)}</a></footer>'
+    )
 
 
 LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL", "FAILED"}
@@ -4968,7 +4996,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     group_toggle_href = "/?" + urllib.parse.urlencode(group_toggle_params, doseq=True)
     group_toggle_control = (
         f'<a class="button{group_active_class}" href="{escape(group_toggle_href)}" '
-        f'title="Gruppierung ein- oder ausschalten">{icon("list")} Gruppieren</a>'
+        f'title="Gruppierung ein- oder ausschalten">{icon("list-tree")} Gruppieren</a>'
     )
     product_category_options = "".join(
         f'<option value="{escape(category["id"])}">{escape(category.get("name") or category["id"])}</option>'
@@ -5886,7 +5914,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         </form>
       </div>
     </section>
-    <footer class="app-footer"><span>{escape(APP_NAME)}</span><span>v{escape(APP_VERSION)}</span></footer>
+    {app_footer_html()}
   </main>
   <div class="dialog-backdrop"{' open' if show_market_dialog else ''}>
     <section class="dialog">
@@ -6260,6 +6288,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         indent=2,
     )
     update_status = update_service_status()
+    git_info = git_metadata()
     legacy_update_result = state.pop("update_result", None)
     update_start_result = state.pop("update_start_result", None) or {}
     if update_start_result or legacy_update_result:
@@ -6489,7 +6518,7 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             <input name="auto_refresh_interval_hours" inputmode="decimal" value="{escape(settings_value(config, 'auto_refresh_interval_hours', '6'))}">
             </div>
           </div>
-          <div class="small">Läuft serverseitig, solange die App läuft.</div>
+          <div class="small">Prüft Artikel automatisch im eingestellten Intervall, aktualisiert Preise, Status und Bilder und sendet bei aktivem MQTT die neuen Werte an Home Assistant. Läuft serverseitig, solange die App läuft.</div>
           </div>
         </div>
         <div class="settings-card settings-card-full" style="margin-top: 12px">
@@ -6859,6 +6888,8 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
         <div class="settings-card">
           <h3>Installierte Version</h3>
           <div class="metric"><span>{escape(APP_NAME)}</span><strong>v{escape(APP_VERSION)}</strong></div>
+          <div class="metric"><span>Branch</span><strong>{escape(git_info.get("branch", "-"))}</strong></div>
+          <div class="metric"><span>Commit</span><strong>{escape(git_info.get("commit", "-"))}</strong></div>
           <div class="small">Diese Anzeige kommt aus der aktuell laufenden App.</div>
         </div>
         <div class="settings-card settings-card-full">
@@ -6875,10 +6906,6 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
           {update_start_html}
           <h4>Update-Log</h4>
           {update_log_html}
-        </div>
-        <div class="settings-card settings-card-full">
-          <h3>Config-Schutz</h3>
-          <div class="small">Updates sollen keine lokale config.yaml, state.json, hochgeladenen PDFs, generierten Bilder oder Cache-Daten überschreiben. Diese Dateien gehören nicht ins öffentliche Repo.</div>
         </div>
       </div>
     </section>
@@ -6963,7 +6990,7 @@ systemctl restart preisermittlung</code></pre>
         </div>
       </div>
     </section>
-    <footer class="app-footer"><span>{escape(APP_NAME)}</span><span>v{escape(APP_VERSION)}</span></footer>
+    {app_footer_html()}
   </main>
   <script>
     function showBackupStatus(message, selector) {{
@@ -7882,7 +7909,7 @@ def clear_provider_browser_cache(provider: str) -> Response:
         set_notice("Browser-Cache geleert.")
     except Exception as exc:
         set_notice(f"Browser-Cache konnte nicht geleert werden: {exc}")
-    return redirect(url_for("settings_page"))
+    return redirect(url_for("settings_page", tab="browser"))
 
 
 @app.post("/manual-pdfs")
