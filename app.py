@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.41-dev"
+APP_VERSION = "0.1.42-dev"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
 UPDATE_LOG_PATH = Path(__file__).with_name("tmp").joinpath("update.log")
@@ -4958,8 +4958,17 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         if per_page_choice != "standard"
         else ""
     )
+    group_toggle_params = dict(base_filter_params)
+    if per_page_choice != "standard":
+        group_toggle_params["per_page"] = per_page_choice
+    if grouped_view:
+        group_toggle_params["view"] = "all"
+    else:
+        group_toggle_params["view"] = "grouped"
+    group_toggle_href = "/?" + urllib.parse.urlencode(group_toggle_params, doseq=True)
     group_toggle_control = (
-        f'<button class="{group_active_class.strip()}" type="submit" name="view" value="grouped">{icon("list")} Gruppieren</button>'
+        f'<a class="button{group_active_class}" href="{escape(group_toggle_href)}" '
+        f'title="Gruppierung ein- oder ausschalten">{icon("list")} Gruppieren</a>'
     )
     product_category_options = "".join(
         f'<option value="{escape(category["id"])}">{escape(category.get("name") or category["id"])}</option>'
