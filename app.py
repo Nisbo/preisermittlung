@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.46-dev"
+APP_VERSION = "0.1.47-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -3108,9 +3108,19 @@ def parse_log_line(line: str, source: str) -> Dict[str, Any]:
         journal_match = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2})?)\s+\S+\s+(.*)$", text)
         if journal_match:
             timestamp, message = journal_match.groups()
-        level_match = re.search(r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FAILED)\b", text, flags=re.I)
-        if level_match:
-            level = level_match.group(1).upper()
+        access_match = re.search(r'"\w+\s+[^"]+\s+HTTP/[0-9.]+"\s+(\d{3})\b', text)
+        if access_match:
+            status_code = int(access_match.group(1))
+            if status_code >= 500:
+                level = "ERROR"
+            elif status_code >= 400:
+                level = "WARNING"
+            else:
+                level = "INFO"
+        else:
+            level_match = re.search(r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FAILED)\b", text, flags=re.I)
+            if level_match:
+                level = level_match.group(1).upper()
     return {
         "time": timestamp,
         "source": source,
@@ -4813,6 +4823,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
     )
     show_market_dialog = request.args.get("market_dialog") == "1"
     show_market_results = request.args.get("market_results") == "1"
+    market_search_error = str(search.get("error") or "").strip() if show_market_results else ""
     show_markets_dialog = request.args.get("markets_dialog") == "1"
     show_categories_dialog = request.args.get("categories_dialog") == "1"
     show_generic_dialog = request.args.get("generic_dialog") == "1"
@@ -5986,7 +5997,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         <div class="field"><label>Suchtext optional</label><input name="query" placeholder="Straße, Ort oder Marktname" value="{escape(str(search.get('query') or '')) if show_market_results else ''}"></div>
         <button type="submit">{icon('search')} Suchen</button>
       </form>
-      {('<div class="market-list">' + ''.join(search_rows) + '</div>') if search_rows else '<div class="small">Noch keine Suche ausgeführt.</div>'}
+      {f'<div class="error" style="margin-top: 12px">{escape(market_search_error)}</div>' if market_search_error else ''}
+      {('<div class="market-list">' + ''.join(search_rows) + '</div>') if search_rows else ('<div class="small">Keine Märkte gefunden.</div>' if show_market_results and not market_search_error else '<div class="small">Noch keine Suche ausgeführt.</div>')}
     </section>
   </div>
   <div class="dialog-backdrop"{' open' if show_markets_dialog else ''}>
@@ -8141,12 +8153,32 @@ def search_markets() -> Response:
     postal_code = request.form.get("postal_code", "").strip()
     query = request.form.get("query", "").strip().lower()
     if postal_code:
-        results = find_markets(provider, postal_code)
-        if query:
-            results = [market for market in results if query in market_label(market).lower()]
+        results: List[Dict[str, Any]] = []
+        error_message = ""
+        try:
+            results = find_markets(provider, postal_code)
+            if query:
+                results = [market for market in results if query in market_label(market).lower()]
+        except Exception as exc:
+            app.logger.warning(
+                "Market search failed for provider=%s postal_code=%s: %s",
+                provider,
+                postal_code,
+                exc,
+            )
+            error_message = (
+                "Marktsuche konnte gerade nicht abgeschlossen werden. "
+                "Bitte prüfe PLZ und Anbieter oder versuche es gleich erneut."
+            )
         with state_lock:
             state = load_state()
-            state["market_search"] = {"provider": provider, "postal_code": postal_code, "query": query, "results": results}
+            state["market_search"] = {
+                "provider": provider,
+                "postal_code": postal_code,
+                "query": query,
+                "results": results,
+                "error": error_message,
+            }
             save_state(state)
     return redirect(url_for("index", market_dialog=1, market_results=1))
 
