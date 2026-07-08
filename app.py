@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.45-dev"
+APP_VERSION = "0.1.46-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -258,7 +258,7 @@ input, select { width: 100%; padding: 0 10px; background: white; color: var(--fg
 .metric strong { font-size: 16px; }
 .version-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
   margin-top: 10px;
 }
@@ -2042,6 +2042,11 @@ document.querySelectorAll('[data-live-search]').forEach((input) => {
             currentResults.innerHTML = nextResults.innerHTML;
             bindSortButtons(currentResults);
           }
+          const nextProductDialogs = next.querySelector('[data-product-dialogs]');
+          const currentProductDialogs = document.querySelector('[data-product-dialogs]');
+          if (nextProductDialogs && currentProductDialogs) {
+            currentProductDialogs.innerHTML = nextProductDialogs.innerHTML;
+          }
           if (nextSummary && currentSummary) currentSummary.innerHTML = nextSummary.innerHTML;
           const query = params.toString();
           history.replaceState(null, '', query ? '?' + query : '/');
@@ -3020,20 +3025,46 @@ def update_service_status() -> Dict[str, Any]:
 def git_metadata() -> Dict[str, str]:
     git = shutil.which("git")
     if not git:
-        return {"branch": "-", "commit": "-"}
-    app_dir = str(Path(__file__).parent)
-    commands = {
-        "branch": [git, "-c", f"safe.directory={app_dir}", "-C", app_dir, "rev-parse", "--abbrev-ref", "HEAD"],
-        "commit": [git, "-c", f"safe.directory={app_dir}", "-C", app_dir, "rev-parse", "--short", "HEAD"],
-    }
-    result: Dict[str, str] = {}
-    for key, command in commands.items():
+        return {"branch": "-", "commit": "-", "commit_date": "-", "installed_at": "-"}
+    app_dir_path = Path(__file__).parent
+    app_dir = str(app_dir_path)
+
+    def run_git(*args: str) -> str:
         try:
-            completed = subprocess.run(command, text=True, capture_output=True, timeout=5, check=False)
-            value = (completed.stdout or "").strip() if completed.returncode == 0 else ""
+            completed = subprocess.run(
+                [git, "-c", f"safe.directory={app_dir}", "-C", app_dir, *args],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            return (completed.stdout or "").strip() if completed.returncode == 0 else ""
         except (OSError, subprocess.SubprocessError):
-            value = ""
-        result[key] = value or "-"
+            return ""
+
+    branch = run_git("rev-parse", "--abbrev-ref", "HEAD") or "-"
+    commit = run_git("rev-parse", "--short", "HEAD") or "-"
+    commit_date = run_git("show", "-s", "--format=%cI", "HEAD")
+    installed_at = ""
+    ref_path = ""
+    if branch and branch not in {"-", "HEAD"}:
+        ref_path = run_git("rev-parse", "--git-path", f"refs/heads/{branch}")
+    if not ref_path:
+        ref_path = run_git("rev-parse", "--git-path", "HEAD")
+    if ref_path:
+        ref_file = Path(ref_path)
+        if not ref_file.is_absolute():
+            ref_file = app_dir_path / ref_file
+        try:
+            installed_at = datetime.fromtimestamp(ref_file.stat().st_mtime, timezone.utc).isoformat()
+        except OSError:
+            installed_at = ""
+    result = {
+        "branch": branch,
+        "commit": commit,
+        "commit_date": commit_date or "-",
+        "installed_at": installed_at or "-",
+    }
     return result
 
 
@@ -6090,11 +6121,13 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
   {delete_category_group_dialog}
   {hit_dialog_html}
   {generic_dialog_html}
-  {''.join(move_dialogs)}
-  {''.join(delete_product_dialogs)}
-  {''.join(image_dialogs)}
-  {''.join(history_dialogs)}
-  {''.join(reset_history_dialogs)}
+  <div data-product-dialogs>
+    {''.join(move_dialogs)}
+    {''.join(delete_product_dialogs)}
+    {''.join(image_dialogs)}
+    {''.join(history_dialogs)}
+    {''.join(reset_history_dialogs)}
+  </div>
   <script>{SCRIPT}</script>
 </body>
 </html>"""
@@ -6909,12 +6942,14 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
     <section class="panel" data-settings-panel="updates" {'hidden' if active_settings_tab != 'updates' else ''}>
       <h2>Update</h2>
       <div class="settings-grid align-start">
-        <div class="settings-card">
+        <div class="settings-card settings-card-full">
           <h3>Installierte Version</h3>
           <div class="version-grid">
-            <div class="version-item"><span>App</span><strong>{escape(APP_NAME)} v{escape(APP_VERSION)}</strong></div>
+            <div class="version-item"><span>Version</span><strong>v{escape(APP_VERSION)}</strong></div>
             <div class="version-item"><span>Branch</span><strong>{escape(git_info.get("branch", "-"))}</strong></div>
             <div class="version-item"><span>Commit</span><strong>{escape(git_info.get("commit", "-"))}</strong></div>
+            <div class="version-item"><span>Commit-Datum</span><strong>{escape(format_datetime_de(git_info.get("commit_date")))}</strong></div>
+            <div class="version-item"><span>Installiert</span><strong>{escape(format_datetime_de(git_info.get("installed_at")))}</strong></div>
           </div>
           <div class="small">Diese Anzeige kommt aus der aktuell laufenden App.</div>
         </div>
