@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.54-dev"
+APP_VERSION = "0.1.55-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -356,6 +356,39 @@ tr:last-child td { border-bottom: 0; }
   gap: 8px;
   align-items: end;
   margin-top: 18px;
+}
+.history-range-field {
+  position: relative;
+  min-width: 170px;
+}
+.history-range-button {
+  width: 100%;
+  justify-content: space-between;
+  gap: 12px;
+}
+.history-range-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 24px rgba(0,0,0,.15);
+}
+.history-range-menu[hidden] { display: none; }
+.history-range-choice {
+  justify-content: flex-start;
+  min-height: 32px;
+  border: 0;
+}
+.history-range-choice.is-active {
+  color: var(--accent-button);
+  background: color-mix(in srgb, var(--accent-button) 8%, transparent);
 }
 .history-tabs { display: flex; gap: 8px; margin: 8px 0 12px; }
 .history-reset-open { margin-left: auto; }
@@ -1773,6 +1806,14 @@ function renderHistoryTable(container, data) {
   </table></div>`;
 }
 const historyDialogStates = new Map();
+const historyRangeLabels = {
+  '24h': '24 Stunden',
+  '7d': '7 Tage',
+  '14d': '14 Tage',
+  '1m': '1 Monat',
+  '6m': '6 Monate',
+  '12m': '12 Monate',
+};
 function historyDialogKey(dialog) {
   return dialog.id || dialog.dataset.productId || String(Math.random());
 }
@@ -1808,6 +1849,20 @@ function setHistoryChangesOnly(dialog, checked) {
 function historyChangesOnlyActive(dialog) {
   return !!historyState(dialog).changesOnly;
 }
+function syncHistoryRangeControl(dialog) {
+  const state = historyState(dialog);
+  const label = historyRangeLabels[state.range] || historyRangeLabels[dialog.dataset.historyDefaultRange] || '7 Tage';
+  const button = dialog.querySelector('[data-history-range-button]');
+  if (button) button.querySelector('[data-history-range-label]').textContent = label;
+  dialog.querySelectorAll('[data-history-range-choice]').forEach((choice) => {
+    choice.classList.toggle('is-active', choice.dataset.historyRangeChoice === state.range);
+  });
+}
+function closeHistoryRangeMenus(exceptDialog = null) {
+  document.querySelectorAll('[data-history-range-menu]').forEach((menu) => {
+    if (!exceptDialog || !exceptDialog.contains(menu)) menu.hidden = true;
+  });
+}
 function resetHistoryDialog(dialog) {
   const state = historyState(dialog);
   state.changesOnly = false;
@@ -1819,6 +1874,8 @@ function resetHistoryDialog(dialog) {
   state.range = dialog.dataset.historyDefaultRange || '7d';
   const range = dialog.querySelector('[data-history-range]');
   if (range) range.value = state.range;
+  syncHistoryRangeControl(dialog);
+  closeHistoryRangeMenus(dialog);
   setHistoryChangesOnly(dialog, false);
   dialog.querySelectorAll('[data-history-tab]').forEach((item) => {
     item.classList.toggle('is-active', item.dataset.historyTab === 'chart');
@@ -1918,6 +1975,36 @@ document.addEventListener('change', (event) => {
 });
 document.addEventListener('click', (event) => {
   if (event.defaultPrevented) return;
+  const rangeButton = event.target.closest('[data-history-range-button]');
+  if (rangeButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    const dialog = rangeButton.closest('[data-history-dialog]');
+    if (!dialog) return;
+    const menu = dialog.querySelector('[data-history-range-menu]');
+    if (!menu) return;
+    const willOpen = menu.hidden;
+    closeHistoryRangeMenus(dialog);
+    menu.hidden = !willOpen;
+    return;
+  }
+  const rangeChoice = event.target.closest('[data-history-range-choice]');
+  if (rangeChoice) {
+    event.preventDefault();
+    event.stopPropagation();
+    const dialog = rangeChoice.closest('[data-history-dialog]');
+    if (!dialog) return;
+    const state = historyState(dialog);
+    state.range = rangeChoice.dataset.historyRangeChoice || dialog.dataset.historyDefaultRange || '7d';
+    state.offset = 0;
+    state.page = 1;
+    dialog.dataset.historyOffset = '0';
+    syncHistoryRangeControl(dialog);
+    closeHistoryRangeMenus();
+    loadHistoryDialog(dialog, 1, 0, historyChangesOnlyActive(dialog));
+    return;
+  }
+  closeHistoryRangeMenus();
   const changesOnly = event.target.closest('[data-history-changes-only]');
   if (changesOnly && !changesOnly.matches('input')) {
     event.preventDefault();
@@ -5692,8 +5779,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             for category in categories
         )
         selected_history_range = history_default_range(config)
-        history_range_options = "".join(
-            f'<option value="{escape(value)}" {"selected" if selected_history_range == value else ""}>{escape(label)}</option>'
+        history_range_choices = "".join(
+            f'<button class="history-range-choice{" is-active" if selected_history_range == value else ""}" type="button" data-history-range-choice="{escape(value)}">{escape(label)}</button>'
             for value, label in [
                 ("24h", "24 Stunden"),
                 ("7d", "7 Tage"),
@@ -5714,9 +5801,10 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '<button class="dialog-close" type="button" data-dialog-close aria-label="Schließen">×</button>'
             '</div>'
             '<div class="history-controls">'
-            '<div class="field"><label>Zeitraum</label><select data-history-range>'
-            f'{history_range_options}'
-            '</select></div>'
+            '<div class="field history-range-field"><label>Zeitraum</label>'
+            f'<button class="history-range-button" type="button" data-history-range-button><span data-history-range-label>{escape(dict([("24h", "24 Stunden"), ("7d", "7 Tage"), ("14d", "14 Tage"), ("1m", "1 Monat"), ("6m", "6 Monate"), ("12m", "12 Monate")]).get(selected_history_range, "7 Tage"))}</span><span>⌄</span></button>'
+            f'<div class="history-range-menu" data-history-range-menu hidden>{history_range_choices}</div>'
+            '</div>'
             '<div class="history-window-actions">'
             '<button class="button" type="button" data-history-window="prev" onclick="return historyWindowStep(this, 1)">← Zurück</button>'
             '<button class="button" type="button" data-history-window="next" onclick="return historyWindowStep(this, -1)">Weiter →</button>'
