@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.47-dev"
+APP_VERSION = "0.1.48-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -363,6 +363,13 @@ tr:last-child td { border-bottom: 0; }
   background: var(--accent-button);
   border-color: var(--accent-button);
   color: white;
+}
+.history-log-options {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 .history-chart {
   min-height: 240px;
@@ -1758,14 +1765,15 @@ function renderHistoryTable(container, data) {
 async function loadHistoryDialog(dialog, page = 1, offsetOverride = null) {
   const productId = dialog.dataset.productId || '';
   const range = dialog.querySelector('[data-history-range]')?.value || '7d';
+  const changesOnly = dialog.querySelector('[data-history-changes-only]')?.checked ? '1' : '0';
   const offset = offsetOverride === null ? Number(dialog.dataset.historyOffset || '0') : Number(offsetOverride || 0);
   const chart = dialog.querySelector('[data-history-chart]');
   const table = dialog.querySelector('[data-history-table]');
   const pageInfo = dialog.querySelector('[data-history-page-info]');
   const windowLabel = dialog.querySelector('[data-history-window-label]');
-  if (chart) chart.innerHTML = '<div class="history-loading">Verlauf wird geladen...</div>';
+  if (chart) chart.innerHTML = '<div class="history-loading">Chart wird geladen...</div>';
   if (table) table.innerHTML = '';
-  const response = await fetch(`/api/products/${encodeURIComponent(productId)}/history?range=${encodeURIComponent(range)}&page=${page}&offset=${offset}`, {cache: 'no-store'});
+  const response = await fetch(`/api/products/${encodeURIComponent(productId)}/history?range=${encodeURIComponent(range)}&page=${page}&offset=${offset}&changes_only=${changesOnly}`, {cache: 'no-store'});
   const data = await response.json();
   dialog.dataset.historyPage = String(data.page || 1);
   dialog.dataset.historyTotalPages = String(data.total_pages || 1);
@@ -1798,6 +1806,11 @@ document.addEventListener('change', (event) => {
     const dialog = select.closest('[data-history-dialog]');
     dialog.dataset.historyOffset = '0';
     loadHistoryDialog(dialog, 1, 0);
+  }
+  const changesOnly = event.target.closest('[data-history-changes-only]');
+  if (changesOnly) {
+    const dialog = changesOnly.closest('[data-history-dialog]');
+    if (dialog) loadHistoryDialog(dialog, 1);
   }
 });
 document.addEventListener('click', (event) => {
@@ -4056,7 +4069,26 @@ def history_window(range_key: str, offset: int = 0) -> Dict[str, Any]:
     }
 
 
-def read_price_history(product_id: str, range_key: str = "7d", page: int = 1, per_page: int = 25, offset: int = 0) -> Dict[str, Any]:
+def history_change_signature(record: Dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        bool(record.get("ok")),
+        record.get("price_cents"),
+        str(record.get("error") or ""),
+    )
+
+
+def history_change_rows(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    changed: List[Dict[str, Any]] = []
+    previous_signature: Optional[tuple[Any, ...]] = None
+    for record in records:
+        signature = history_change_signature(record)
+        if previous_signature is None or signature != previous_signature:
+            changed.append(record)
+        previous_signature = signature
+    return changed
+
+
+def read_price_history(product_id: str, range_key: str = "7d", page: int = 1, per_page: int = 25, offset: int = 0, changes_only: bool = False) -> Dict[str, Any]:
     window = history_window(range_key, offset)
     records: List[Dict[str, Any]] = []
     if PRICE_HISTORY_PATH.exists():
@@ -4088,7 +4120,8 @@ def read_price_history(product_id: str, range_key: str = "7d", page: int = 1, pe
         }
         for item in records
     ]
-    newest_first = list(reversed(records))
+    row_records = history_change_rows(records) if changes_only else records
+    newest_first = list(reversed(row_records))
     total = len(newest_first)
     per_page = max(10, min(100, int(per_page or 25)))
     total_pages = max(1, (total + per_page - 1) // per_page)
@@ -4113,6 +4146,7 @@ def read_price_history(product_id: str, range_key: str = "7d", page: int = 1, pe
         "total_pages": total_pages,
         "points": graph_points,
         "rows": page_records,
+        "changes_only": changes_only,
     }
 
 
@@ -5569,12 +5603,15 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '</div>'
             '</div>'
             '<div class="history-tabs">'
-            '<button class="history-tab is-active" type="button" data-history-tab="chart">Verlauf</button>'
+            '<button class="history-tab is-active" type="button" data-history-tab="chart">Chart</button>'
             '<button class="history-tab" type="button" data-history-tab="log">Log</button>'
             f'<button class="button danger history-reset-open" type="button" data-dialog-open="{escape(reset_history_dialog_id)}">{icon("trash")} Reset</button>'
             '</div>'
-            '<div data-history-panel="chart"><div class="history-chart" data-history-chart><div class="history-loading">Verlauf wird geladen...</div></div></div>'
+            '<div data-history-panel="chart"><div class="history-chart" data-history-chart><div class="history-loading">Chart wird geladen...</div></div></div>'
             '<div data-history-panel="log" hidden>'
+            '<div class="history-log-options">'
+            '<label class="toggle-line"><input type="checkbox" data-history-changes-only> Nur Änderungen anzeigen</label>'
+            '</div>'
             '<div data-history-table><div class="history-loading">Log wird geladen...</div></div>'
             '<div class="history-pagination">'
             '<button type="button" data-history-page="prev">Zurück</button>'
@@ -8071,7 +8108,8 @@ def api_product_history(product_id: str) -> Response:
         offset = int(request.args.get("offset", "0") or 0)
     except ValueError:
         offset = 0
-    return jsonify(read_price_history(product_id, range_key, page, 25, offset))
+    changes_only = request.args.get("changes_only") in {"1", "true", "yes", "on"}
+    return jsonify(read_price_history(product_id, range_key, page, 25, offset, changes_only))
 
 
 @app.get("/api/update-status")
