@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.49-dev"
+APP_VERSION = "0.1.50-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -370,6 +370,16 @@ tr:last-child td { border-bottom: 0; }
   justify-content: flex-end;
   gap: 10px;
   margin-bottom: 10px;
+}
+.history-filter-toggle {
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--muted);
+}
+.history-filter-toggle.is-active {
+  color: var(--accent-button);
+  border-color: var(--accent-button);
+  background: color-mix(in srgb, var(--accent-button) 9%, var(--panel));
 }
 .history-chart {
   min-height: 240px;
@@ -1766,8 +1776,15 @@ function renderHistoryTable(container, data) {
 function setHistoryChangesOnly(dialog, checked) {
   const isChecked = !!checked;
   dialog.dataset.historyChangesOnly = isChecked ? '1' : '0';
-  const checkbox = dialog.querySelector('[data-history-changes-only]');
-  if (checkbox) checkbox.checked = isChecked;
+  const control = dialog.querySelector('[data-history-changes-only]');
+  if (!control) return;
+  if (control.matches('input')) {
+    control.checked = isChecked;
+  } else {
+    control.classList.toggle('is-active', isChecked);
+    control.setAttribute('aria-pressed', isChecked ? 'true' : 'false');
+    control.textContent = isChecked ? '✓ Nur Änderungen anzeigen' : 'Nur Änderungen anzeigen';
+  }
 }
 async function loadHistoryDialog(dialog, page = 1, offsetOverride = null, changesOnlyOverride = null) {
   const productId = dialog.dataset.productId || '';
@@ -1785,8 +1802,9 @@ async function loadHistoryDialog(dialog, page = 1, offsetOverride = null, change
   const table = dialog.querySelector('[data-history-table]');
   const pageInfo = dialog.querySelector('[data-history-page-info]');
   const windowLabel = dialog.querySelector('[data-history-window-label]');
-  if (chart) chart.innerHTML = '<div class="history-loading">Chart wird geladen...</div>';
-  if (table) table.innerHTML = '';
+  const activePanel = dialog.querySelector('[data-history-panel]:not([hidden])')?.dataset.historyPanel || 'chart';
+  if (chart && activePanel === 'chart') chart.innerHTML = '<div class="history-loading">Chart wird geladen...</div>';
+  if (table && activePanel === 'log') table.innerHTML = '<div class="history-loading">Log wird geladen...</div>';
   const response = await fetch(`/api/products/${encodeURIComponent(productId)}/history?range=${encodeURIComponent(range)}&page=${page}&offset=${offset}&changes_only=${changesOnly}`, {cache: 'no-store'});
   const data = await response.json();
   dialog.dataset.historyPage = String(data.page || 1);
@@ -1826,11 +1844,19 @@ document.addEventListener('change', (event) => {
   const changesOnly = event.target.closest('[data-history-changes-only]');
   if (changesOnly) {
     const dialog = changesOnly.closest('[data-history-dialog]');
-    if (dialog) loadHistoryDialog(dialog, 1, null, changesOnly.checked);
+    if (dialog && changesOnly.matches('input')) loadHistoryDialog(dialog, 1, null, changesOnly.checked);
   }
 });
 document.addEventListener('click', (event) => {
   if (event.defaultPrevented) return;
+  const changesOnly = event.target.closest('[data-history-changes-only]');
+  if (changesOnly && !changesOnly.matches('input')) {
+    event.preventDefault();
+    event.stopPropagation();
+    const dialog = changesOnly.closest('[data-history-dialog]');
+    if (dialog) loadHistoryDialog(dialog, 1, null, dialog.dataset.historyChangesOnly !== '1');
+    return;
+  }
   const tab = event.target.closest('[data-history-tab]');
   if (tab) {
     const dialog = tab.closest('[data-history-dialog]');
@@ -5626,7 +5652,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '<div data-history-panel="chart"><div class="history-chart" data-history-chart><div class="history-loading">Chart wird geladen...</div></div></div>'
             '<div data-history-panel="log" hidden>'
             '<div class="history-log-options">'
-            '<label class="toggle-line"><input type="checkbox" data-history-changes-only> Nur Änderungen anzeigen</label>'
+            '<button class="history-filter-toggle" type="button" data-history-changes-only aria-pressed="false">Nur Änderungen anzeigen</button>'
             '</div>'
             '<div data-history-table><div class="history-loading">Log wird geladen...</div></div>'
             '<div class="history-pagination">'
