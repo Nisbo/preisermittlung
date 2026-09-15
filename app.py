@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.55-dev"
+APP_VERSION = "0.1.56-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -1717,6 +1717,25 @@ function formatHistoryDate(value) {
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit', year:'numeric'});
 }
+function formatHistoryDuration(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return '-';
+  const minutes = Math.round(value / 60);
+  if (minutes < 60) return `${minutes} Min.`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} Std.`;
+  const days = Math.round(hours / 24);
+  if (days < 60) return `${days} Tg.`;
+  const months = Math.round(days / 30);
+  if (months < 24) return `${months} Mon.`;
+  return `${Math.round(days / 365)} J.`;
+}
+function formatHistoryDelta(cents) {
+  if (cents === null || cents === undefined || Number.isNaN(Number(cents))) return '-';
+  const value = Number(cents);
+  const sign = value > 0 ? '+' : '';
+  return sign + centsToText(value);
+}
 function renderHistoryChart(container, data) {
   const points = data.points || [];
   const okPoints = points.filter((item) => item.ok && item.price_cents !== null && item.price_cents !== undefined);
@@ -1790,19 +1809,26 @@ function renderHistoryChart(container, data) {
 }
 function renderHistoryTable(container, data) {
   const rows = data.rows || [];
+  const changesOnly = !!data.changes_only;
   const body = rows.map((item) => {
     const error = item.ok ? '' : (item.error || 'Fehler');
     const status = error === 'Kein Angebot' ? 'Kein Angebot' : (item.ok ? 'OK' : 'Fehler');
+    const changeCells = changesOnly
+      ? `<td>${formatHistoryDuration(item.change_elapsed_seconds)}</td><td>${formatHistoryDelta(item.change_delta_cents)}</td>`
+      : '';
     return `<tr class="${item.ok ? '' : 'history-row-error'}">
       <td>${formatHistoryTime(item.checked_at)}</td>
       <td>${item.ok ? centsToText(item.price_cents) : '-'}</td>
+      ${changeCells}
       <td>${status}</td>
       <td>${error}</td>
     </tr>`;
   }).join('');
+  const changeHeads = changesOnly ? '<th>Seit Änderung</th><th>Änderung</th>' : '';
+  const colspan = changesOnly ? 6 : 4;
   container.innerHTML = `<div class="history-table-wrap"><table>
-    <thead><tr><th>Zeitpunkt</th><th>Preis</th><th>Status</th><th>Info</th></tr></thead>
-    <tbody>${body || '<tr><td colspan="4">Keine Einträge.</td></tr>'}</tbody>
+    <thead><tr><th>Zeitpunkt</th><th>Preis</th>${changeHeads}<th>Status</th><th>Info</th></tr></thead>
+    <tbody>${body || `<tr><td colspan="${colspan}">Keine Einträge.</td></tr>`}</tbody>
   </table></div>`;
 }
 const historyDialogStates = new Map();
@@ -1967,7 +1993,7 @@ document.addEventListener('change', (event) => {
     dialog.dataset.historyOffset = '0';
     loadHistoryDialog(dialog, 1, 0, historyChangesOnlyActive(dialog));
   }
-  const changesOnly = event.target.closest('[data-history-changes-only]');
+  const changesOnly = event.target.closest('input[data-history-changes-only]');
   if (changesOnly) {
     const dialog = changesOnly.closest('[data-history-dialog]');
     if (dialog && changesOnly.matches('input')) loadHistoryDialog(dialog, 1, null, changesOnly.checked);
@@ -2005,8 +2031,8 @@ document.addEventListener('click', (event) => {
     return;
   }
   closeHistoryRangeMenus();
-  const changesOnly = event.target.closest('[data-history-changes-only]');
-  if (changesOnly && !changesOnly.matches('input')) {
+  const changesOnly = event.target.closest('button[data-history-changes-only]');
+  if (changesOnly) {
     event.preventDefault();
     event.stopPropagation();
     const dialog = changesOnly.closest('[data-history-dialog]');
@@ -4329,6 +4355,23 @@ def read_price_history(product_id: str, range_key: str = "7d", page: int = 1, pe
         for item in records
     ]
     row_records = history_change_rows(records) if changes_only else records
+    if changes_only:
+        previous_record: Optional[Dict[str, Any]] = None
+        for record in row_records:
+            if previous_record:
+                current_ts = float(record.get("_ts") or 0)
+                previous_ts = float(previous_record.get("_ts") or 0)
+                record["change_elapsed_seconds"] = max(0, int(round(current_ts - previous_ts)))
+                current_price = record.get("price_cents")
+                previous_price = previous_record.get("price_cents")
+                if isinstance(current_price, int) and isinstance(previous_price, int):
+                    record["change_delta_cents"] = current_price - previous_price
+                else:
+                    record["change_delta_cents"] = None
+            else:
+                record["change_elapsed_seconds"] = None
+                record["change_delta_cents"] = None
+            previous_record = record
     newest_first = list(reversed(row_records))
     total = len(newest_first)
     per_page = max(10, min(100, int(per_page or 25)))
