@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.53-dev"
+APP_VERSION = "0.1.54-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -1772,7 +1772,27 @@ function renderHistoryTable(container, data) {
     <tbody>${body || '<tr><td colspan="4">Keine Einträge.</td></tr>'}</tbody>
   </table></div>`;
 }
+const historyDialogStates = new Map();
+function historyDialogKey(dialog) {
+  return dialog.id || dialog.dataset.productId || String(Math.random());
+}
+function historyState(dialog) {
+  const key = historyDialogKey(dialog);
+  if (!historyDialogStates.has(key)) {
+    historyDialogStates.set(key, {
+      changesOnly: false,
+      offset: 0,
+      page: 1,
+      totalPages: 1,
+      requestId: 0,
+      panel: 'chart',
+      range: dialog.dataset.historyDefaultRange || '7d',
+    });
+  }
+  return historyDialogStates.get(key);
+}
 function setHistoryChangesOnly(dialog, checked) {
+  historyState(dialog).changesOnly = !!checked;
   const isChecked = !!checked;
   dialog.dataset.historyChangesOnly = isChecked ? '1' : '0';
   const control = dialog.querySelector('[data-history-changes-only]');
@@ -1786,19 +1806,19 @@ function setHistoryChangesOnly(dialog, checked) {
   }
 }
 function historyChangesOnlyActive(dialog) {
-  const control = dialog.querySelector('[data-history-changes-only]');
-  if (control?.matches('input')) return !!control.checked;
-  if (control?.getAttribute('aria-pressed') === 'true') return true;
-  if (control?.classList.contains('is-active')) return true;
-  return dialog.dataset.historyChangesOnly === '1';
+  return !!historyState(dialog).changesOnly;
 }
 function resetHistoryDialog(dialog) {
-  dialog.dataset.historyOffset = '0';
-  dialog.dataset.historyRequestId = '0';
-  dialog.dataset.historyPage = '1';
-  dialog.dataset.historyTotalPages = '1';
+  const state = historyState(dialog);
+  state.changesOnly = false;
+  state.offset = 0;
+  state.page = 1;
+  state.totalPages = 1;
+  state.requestId = 0;
+  state.panel = 'chart';
+  state.range = dialog.dataset.historyDefaultRange || '7d';
   const range = dialog.querySelector('[data-history-range]');
-  if (range) range.value = dialog.dataset.historyDefaultRange || '7d';
+  if (range) range.value = state.range;
   setHistoryChangesOnly(dialog, false);
   dialog.querySelectorAll('[data-history-tab]').forEach((item) => {
     item.classList.toggle('is-active', item.dataset.historyTab === 'chart');
@@ -1808,31 +1828,35 @@ function resetHistoryDialog(dialog) {
   });
 }
 async function loadHistoryDialog(dialog, page = 1, offsetOverride = null, changesOnlyOverride = null) {
-  const requestId = Number(dialog.dataset.historyRequestId || '0') + 1;
-  dialog.dataset.historyRequestId = String(requestId);
+  const state = historyState(dialog);
+  const requestId = state.requestId + 1;
+  state.requestId = requestId;
   const productId = dialog.dataset.productId || '';
-  const range = dialog.querySelector('[data-history-range]')?.value || '7d';
+  const range = state.range || dialog.querySelector('[data-history-range]')?.value || '7d';
   if (changesOnlyOverride !== null) {
     setHistoryChangesOnly(dialog, changesOnlyOverride);
-  } else if (!('historyChangesOnly' in dialog.dataset)) {
-    setHistoryChangesOnly(dialog, false);
+  } else {
+    setHistoryChangesOnly(dialog, state.changesOnly);
   }
   const changesOnlyIsActive = historyChangesOnlyActive(dialog);
   const changesOnly = changesOnlyIsActive ? '1' : '0';
-  const offset = offsetOverride === null ? Number(dialog.dataset.historyOffset || '0') : Number(offsetOverride || 0);
+  const offset = offsetOverride === null ? Number(state.offset || 0) : Number(offsetOverride || 0);
   const chart = dialog.querySelector('[data-history-chart]');
   const table = dialog.querySelector('[data-history-table]');
   const pageInfo = dialog.querySelector('[data-history-page-info]');
   const windowLabel = dialog.querySelector('[data-history-window-label]');
-  const activePanel = dialog.querySelector('[data-history-panel]:not([hidden])')?.dataset.historyPanel || 'chart';
+  const activePanel = state.panel || 'chart';
   if (chart && activePanel === 'chart') chart.innerHTML = '<div class="history-loading">Chart wird geladen...</div>';
   if (table && activePanel === 'log') table.innerHTML = '<div class="history-loading">Log wird geladen...</div>';
   const response = await fetch(`/api/products/${encodeURIComponent(productId)}/history?range=${encodeURIComponent(range)}&page=${page}&offset=${offset}&changes_only=${changesOnly}`, {cache: 'no-store'});
   const data = await response.json();
-  if (dialog.dataset.historyRequestId !== String(requestId)) return;
-  dialog.dataset.historyPage = String(data.page || 1);
-  dialog.dataset.historyTotalPages = String(data.total_pages || 1);
-  dialog.dataset.historyOffset = String(data.offset || 0);
+  if (state.requestId !== requestId) return;
+  state.page = Number(data.page || 1);
+  state.totalPages = Number(data.total_pages || 1);
+  state.offset = Number(data.offset || 0);
+  dialog.dataset.historyPage = String(state.page);
+  dialog.dataset.historyTotalPages = String(state.totalPages);
+  dialog.dataset.historyOffset = String(state.offset);
   if (chart && activePanel === 'chart') renderHistoryChart(chart, data);
   if (table && activePanel === 'log') renderHistoryTable(table, data);
   const dateRangeText = `${formatHistoryDate(data.window_start)} bis ${formatHistoryDate(data.window_end)}`;
@@ -1851,8 +1875,10 @@ async function loadHistoryDialog(dialog, page = 1, offsetOverride = null, change
 function historyWindowStep(button, step) {
   const dialog = button.closest('[data-history-dialog]');
   if (!dialog) return false;
-  const current = Number(dialog.dataset.historyOffset || '0');
+  const state = historyState(dialog);
+  const current = Number(state.offset || 0);
   const next = Math.max(0, current + Number(step || 0));
+  state.offset = next;
   dialog.dataset.historyOffset = String(next);
   loadHistoryDialog(dialog, 1, next);
   return false;
@@ -1860,7 +1886,9 @@ function historyWindowStep(button, step) {
 function showHistoryPanel(button, mode) {
   const dialog = button.closest('[data-history-dialog]');
   if (!dialog) return false;
+  const state = historyState(dialog);
   const selectedMode = mode || button.dataset.historyTab || 'chart';
+  state.panel = selectedMode;
   dialog.querySelectorAll('[data-history-tab]').forEach((item) => {
     item.classList.toggle('is-active', item.dataset.historyTab === selectedMode);
   });
@@ -1874,6 +1902,11 @@ document.addEventListener('change', (event) => {
   const select = event.target.closest('[data-history-range]');
   if (select) {
     const dialog = select.closest('[data-history-dialog]');
+    if (!dialog) return;
+    const state = historyState(dialog);
+    state.range = select.value || dialog.dataset.historyDefaultRange || '7d';
+    state.offset = 0;
+    state.page = 1;
     dialog.dataset.historyOffset = '0';
     loadHistoryDialog(dialog, 1, 0, historyChangesOnlyActive(dialog));
   }
@@ -1903,7 +1936,9 @@ document.addEventListener('click', (event) => {
   if (pageButton) {
     event.preventDefault();
     const dialog = pageButton.closest('[data-history-dialog]');
-    const current = Number(dialog.dataset.historyPage || '1');
+    if (!dialog) return;
+    const state = historyState(dialog);
+    const current = Number(state.page || 1);
     const next = pageButton.dataset.historyPage === 'prev' ? current - 1 : current + 1;
     loadHistoryDialog(dialog, next);
     return;
@@ -1913,8 +1948,10 @@ document.addEventListener('click', (event) => {
     event.preventDefault();
     const dialog = windowButton.closest('[data-history-dialog]');
     if (!dialog) return;
-    const current = Number(dialog.dataset.historyOffset || '0');
+    const state = historyState(dialog);
+    const current = Number(state.offset || 0);
     const next = windowButton.dataset.historyWindow === 'prev' ? current + 1 : Math.max(0, current - 1);
+    state.offset = next;
     dialog.dataset.historyOffset = String(next);
     loadHistoryDialog(dialog, 1, next);
   }
