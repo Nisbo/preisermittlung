@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.50-dev"
+APP_VERSION = "0.1.51-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -1834,6 +1834,18 @@ function historyWindowStep(button, step) {
   loadHistoryDialog(dialog, 1, next);
   return false;
 }
+function showHistoryPanel(button, mode) {
+  const dialog = button.closest('[data-history-dialog]');
+  if (!dialog) return false;
+  const selectedMode = mode || button.dataset.historyTab || 'chart';
+  dialog.querySelectorAll('[data-history-tab]').forEach((item) => {
+    item.classList.toggle('is-active', item.dataset.historyTab === selectedMode);
+  });
+  dialog.querySelectorAll('[data-history-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.historyPanel !== selectedMode;
+  });
+  return false;
+}
 document.addEventListener('change', (event) => {
   const select = event.target.closest('[data-history-range]');
   if (select) {
@@ -1859,10 +1871,8 @@ document.addEventListener('click', (event) => {
   }
   const tab = event.target.closest('[data-history-tab]');
   if (tab) {
-    const dialog = tab.closest('[data-history-dialog]');
-    const mode = tab.dataset.historyTab;
-    dialog.querySelectorAll('[data-history-tab]').forEach((item) => item.classList.toggle('is-active', item === tab));
-    dialog.querySelectorAll('[data-history-panel]').forEach((panel) => panel.hidden = panel.dataset.historyPanel !== mode);
+    event.preventDefault();
+    showHistoryPanel(tab, tab.dataset.historyTab);
     return;
   }
   const pageButton = event.target.closest('[data-history-page]');
@@ -5645,8 +5655,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             '</div>'
             '</div>'
             '<div class="history-tabs">'
-            '<button class="history-tab is-active" type="button" data-history-tab="chart">Chart</button>'
-            '<button class="history-tab" type="button" data-history-tab="log">Log</button>'
+            '<button class="history-tab is-active" type="button" data-history-tab="chart" onclick="return showHistoryPanel(this, \'chart\')">Chart</button>'
+            '<button class="history-tab" type="button" data-history-tab="log" onclick="return showHistoryPanel(this, \'log\')">Log</button>'
             f'<button class="button danger history-reset-open" type="button" data-dialog-open="{escape(reset_history_dialog_id)}">{icon("trash")} Reset</button>'
             '</div>'
             '<div data-history-panel="chart"><div class="history-chart" data-history-chart><div class="history-loading">Chart wird geladen...</div></div></div>'
