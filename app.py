@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.56-dev"
+APP_VERSION = "0.1.57-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -2001,7 +2001,7 @@ document.addEventListener('change', (event) => {
 });
 document.addEventListener('click', (event) => {
   if (event.defaultPrevented) return;
-  const rangeButton = event.target.closest('[data-history-range-button]');
+  const rangeButton = event.target.closest('button[data-history-range-button]');
   if (rangeButton) {
     event.preventDefault();
     event.stopPropagation();
@@ -2014,7 +2014,7 @@ document.addEventListener('click', (event) => {
     menu.hidden = !willOpen;
     return;
   }
-  const rangeChoice = event.target.closest('[data-history-range-choice]');
+  const rangeChoice = event.target.closest('button[data-history-range-choice]');
   if (rangeChoice) {
     event.preventDefault();
     event.stopPropagation();
@@ -2039,15 +2039,16 @@ document.addEventListener('click', (event) => {
     if (dialog) loadHistoryDialog(dialog, 1, null, !historyChangesOnlyActive(dialog));
     return;
   }
-  const tab = event.target.closest('[data-history-tab]');
+  const tab = event.target.closest('button[data-history-tab]');
   if (tab) {
     event.preventDefault();
     showHistoryPanel(tab, tab.dataset.historyTab);
     return;
   }
-  const pageButton = event.target.closest('[data-history-page]');
+  const pageButton = event.target.closest('button[data-history-page]');
   if (pageButton) {
     event.preventDefault();
+    if (pageButton.disabled) return;
     const dialog = pageButton.closest('[data-history-dialog]');
     if (!dialog) return;
     const state = historyState(dialog);
@@ -2056,9 +2057,10 @@ document.addEventListener('click', (event) => {
     loadHistoryDialog(dialog, next);
     return;
   }
-  const windowButton = event.target.closest('[data-history-window]');
+  const windowButton = event.target.closest('button[data-history-window]');
   if (windowButton) {
     event.preventDefault();
+    if (windowButton.disabled) return;
     const dialog = windowButton.closest('[data-history-dialog]');
     if (!dialog) return;
     const state = historyState(dialog);
