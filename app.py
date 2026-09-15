@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.57-dev"
+APP_VERSION = "0.1.58-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -429,6 +429,29 @@ tr:last-child td { border-bottom: 0; }
 .history-chart-empty, .history-loading { padding: 18px; color: var(--muted); }
 .history-table-wrap { max-height: 360px; overflow: auto; }
 .history-row-error td { color: var(--warn); }
+.history-change-separator td {
+  padding: 0 12px;
+  border-bottom: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.history-change-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 22px;
+  transform: translateY(-1px);
+}
+.history-change-line::before,
+.history-change-line::after {
+  content: "";
+  height: 1px;
+  min-width: 42px;
+  background: var(--line);
+}
+.history-change-delta.down { color: var(--ok); font-weight: 700; }
+.history-change-delta.up { color: var(--accent); font-weight: 700; }
 .history-pagination {
   display: flex;
   justify-content: space-between;
@@ -1736,6 +1759,11 @@ function formatHistoryDelta(cents) {
   const sign = value > 0 ? '+' : '';
   return sign + centsToText(value);
 }
+function historyDeltaClass(cents) {
+  const value = Number(cents);
+  if (!Number.isFinite(value) || value === 0) return '';
+  return value < 0 ? 'down' : 'up';
+}
 function renderHistoryChart(container, data) {
   const points = data.points || [];
   const okPoints = points.filter((item) => item.ok && item.price_cents !== null && item.price_cents !== undefined);
@@ -1813,22 +1841,25 @@ function renderHistoryTable(container, data) {
   const body = rows.map((item) => {
     const error = item.ok ? '' : (item.error || 'Fehler');
     const status = error === 'Kein Angebot' ? 'Kein Angebot' : (item.ok ? 'OK' : 'Fehler');
-    const changeCells = changesOnly
-      ? `<td>${formatHistoryDuration(item.change_elapsed_seconds)}</td><td>${formatHistoryDelta(item.change_delta_cents)}</td>`
-      : '';
-    return `<tr class="${item.ok ? '' : 'history-row-error'}">
+    const row = `<tr class="${item.ok ? '' : 'history-row-error'}">
       <td>${formatHistoryTime(item.checked_at)}</td>
       <td>${item.ok ? centsToText(item.price_cents) : '-'}</td>
-      ${changeCells}
       <td>${status}</td>
       <td>${error}</td>
     </tr>`;
+    if (!changesOnly || item.change_elapsed_seconds === null || item.change_elapsed_seconds === undefined) return row;
+    const deltaClass = historyDeltaClass(item.change_delta_cents);
+    const separator = `<tr class="history-change-separator"><td colspan="4">
+      <div class="history-change-line">
+        <span>${formatHistoryDuration(item.change_elapsed_seconds)}</span>
+        <span class="history-change-delta ${deltaClass}">${formatHistoryDelta(item.change_delta_cents)}</span>
+      </div>
+    </td></tr>`;
+    return row + separator;
   }).join('');
-  const changeHeads = changesOnly ? '<th>Seit Änderung</th><th>Änderung</th>' : '';
-  const colspan = changesOnly ? 6 : 4;
   container.innerHTML = `<div class="history-table-wrap"><table>
-    <thead><tr><th>Zeitpunkt</th><th>Preis</th>${changeHeads}<th>Status</th><th>Info</th></tr></thead>
-    <tbody>${body || `<tr><td colspan="${colspan}">Keine Einträge.</td></tr>`}</tbody>
+    <thead><tr><th>Zeitpunkt</th><th>Preis</th><th>Status</th><th>Info</th></tr></thead>
+    <tbody>${body || '<tr><td colspan="4">Keine Einträge.</td></tr>'}</tbody>
   </table></div>`;
 }
 const historyDialogStates = new Map();
