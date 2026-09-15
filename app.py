@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.52-dev"
+APP_VERSION = "0.1.53-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -1786,11 +1786,19 @@ function setHistoryChangesOnly(dialog, checked) {
   }
 }
 function historyChangesOnlyActive(dialog) {
+  const control = dialog.querySelector('[data-history-changes-only]');
+  if (control?.matches('input')) return !!control.checked;
+  if (control?.getAttribute('aria-pressed') === 'true') return true;
+  if (control?.classList.contains('is-active')) return true;
   return dialog.dataset.historyChangesOnly === '1';
 }
 function resetHistoryDialog(dialog) {
   dialog.dataset.historyOffset = '0';
   dialog.dataset.historyRequestId = '0';
+  dialog.dataset.historyPage = '1';
+  dialog.dataset.historyTotalPages = '1';
+  const range = dialog.querySelector('[data-history-range]');
+  if (range) range.value = dialog.dataset.historyDefaultRange || '7d';
   setHistoryChangesOnly(dialog, false);
   dialog.querySelectorAll('[data-history-tab]').forEach((item) => {
     item.classList.toggle('is-active', item.dataset.historyTab === 'chart');
@@ -1825,8 +1833,8 @@ async function loadHistoryDialog(dialog, page = 1, offsetOverride = null, change
   dialog.dataset.historyPage = String(data.page || 1);
   dialog.dataset.historyTotalPages = String(data.total_pages || 1);
   dialog.dataset.historyOffset = String(data.offset || 0);
-  if (chart) renderHistoryChart(chart, data);
-  if (table) renderHistoryTable(table, data);
+  if (chart && activePanel === 'chart') renderHistoryChart(chart, data);
+  if (table && activePanel === 'log') renderHistoryTable(table, data);
   const dateRangeText = `${formatHistoryDate(data.window_start)} bis ${formatHistoryDate(data.window_end)}`;
   if (windowLabel) windowLabel.textContent = dateRangeText;
   const entryLabel = changesOnlyIsActive ? 'Änderungen' : 'Einträge';
@@ -1859,6 +1867,7 @@ function showHistoryPanel(button, mode) {
   dialog.querySelectorAll('[data-history-panel]').forEach((panel) => {
     panel.hidden = panel.dataset.historyPanel !== selectedMode;
   });
+  loadHistoryDialog(dialog, 1, null, historyChangesOnlyActive(dialog));
   return false;
 }
 document.addEventListener('change', (event) => {
@@ -5661,7 +5670,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         delete_product_dialog_id = f"delete-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
         reset_history_dialog_id = f"reset-history-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
         history_dialogs.append(
-            f'<div class="dialog-backdrop" id="{escape(history_dialog_id)}" data-history-dialog="true" data-product-id="{escape(str(product.get("id", "")))}">'
+            f'<div class="dialog-backdrop" id="{escape(history_dialog_id)}" data-history-dialog="true" data-product-id="{escape(str(product.get("id", "")))}" data-history-default-range="{escape(selected_history_range)}">'
             '<section class="dialog">'
             '<div class="dialog-head">'
             f'<div><h2>Preisstatistik</h2><div class="small">{product_name}</div></div>'
