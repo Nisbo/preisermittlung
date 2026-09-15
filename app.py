@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.51-dev"
+APP_VERSION = "0.1.52-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -1641,8 +1641,7 @@ document.addEventListener('click', (event) => {
       target.style.removeProperty('display');
       target.classList.add('is-open');
       if (target.dataset.historyDialog === 'true') {
-        target.dataset.historyOffset = '0';
-        setHistoryChangesOnly(target, false);
+        resetHistoryDialog(target);
         loadHistoryDialog(target, 1, 0);
       }
     }
@@ -1786,17 +1785,32 @@ function setHistoryChangesOnly(dialog, checked) {
     control.textContent = isChecked ? '✓ Nur Änderungen anzeigen' : 'Nur Änderungen anzeigen';
   }
 }
+function historyChangesOnlyActive(dialog) {
+  return dialog.dataset.historyChangesOnly === '1';
+}
+function resetHistoryDialog(dialog) {
+  dialog.dataset.historyOffset = '0';
+  dialog.dataset.historyRequestId = '0';
+  setHistoryChangesOnly(dialog, false);
+  dialog.querySelectorAll('[data-history-tab]').forEach((item) => {
+    item.classList.toggle('is-active', item.dataset.historyTab === 'chart');
+  });
+  dialog.querySelectorAll('[data-history-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.historyPanel !== 'chart';
+  });
+}
 async function loadHistoryDialog(dialog, page = 1, offsetOverride = null, changesOnlyOverride = null) {
+  const requestId = Number(dialog.dataset.historyRequestId || '0') + 1;
+  dialog.dataset.historyRequestId = String(requestId);
   const productId = dialog.dataset.productId || '';
   const range = dialog.querySelector('[data-history-range]')?.value || '7d';
   if (changesOnlyOverride !== null) {
     setHistoryChangesOnly(dialog, changesOnlyOverride);
   } else if (!('historyChangesOnly' in dialog.dataset)) {
-    setHistoryChangesOnly(dialog, dialog.querySelector('[data-history-changes-only]')?.checked);
-  } else {
-    setHistoryChangesOnly(dialog, dialog.dataset.historyChangesOnly === '1');
+    setHistoryChangesOnly(dialog, false);
   }
-  const changesOnly = dialog.dataset.historyChangesOnly === '1' ? '1' : '0';
+  const changesOnlyIsActive = historyChangesOnlyActive(dialog);
+  const changesOnly = changesOnlyIsActive ? '1' : '0';
   const offset = offsetOverride === null ? Number(dialog.dataset.historyOffset || '0') : Number(offsetOverride || 0);
   const chart = dialog.querySelector('[data-history-chart]');
   const table = dialog.querySelector('[data-history-table]');
@@ -1807,6 +1821,7 @@ async function loadHistoryDialog(dialog, page = 1, offsetOverride = null, change
   if (table && activePanel === 'log') table.innerHTML = '<div class="history-loading">Log wird geladen...</div>';
   const response = await fetch(`/api/products/${encodeURIComponent(productId)}/history?range=${encodeURIComponent(range)}&page=${page}&offset=${offset}&changes_only=${changesOnly}`, {cache: 'no-store'});
   const data = await response.json();
+  if (dialog.dataset.historyRequestId !== String(requestId)) return;
   dialog.dataset.historyPage = String(data.page || 1);
   dialog.dataset.historyTotalPages = String(data.total_pages || 1);
   dialog.dataset.historyOffset = String(data.offset || 0);
@@ -1814,9 +1829,9 @@ async function loadHistoryDialog(dialog, page = 1, offsetOverride = null, change
   if (table) renderHistoryTable(table, data);
   const dateRangeText = `${formatHistoryDate(data.window_start)} bis ${formatHistoryDate(data.window_end)}`;
   if (windowLabel) windowLabel.textContent = dateRangeText;
-  const entryLabel = data.changes_only ? 'Änderungen' : 'Einträge';
+  const entryLabel = changesOnlyIsActive ? 'Änderungen' : 'Einträge';
   if (pageInfo) pageInfo.textContent = `${data.range_label || 'Zeitraum'} · ${dateRangeText} · Seite ${data.page || 1} von ${data.total_pages || 1} · ${data.total || 0} ${entryLabel}`;
-  setHistoryChangesOnly(dialog, data.changes_only);
+  setHistoryChangesOnly(dialog, changesOnlyIsActive);
   dialog.querySelectorAll('[data-history-page]').forEach((button) => {
     const direction = button.dataset.historyPage;
     button.disabled = direction === 'prev' ? (data.page || 1) <= 1 : (data.page || 1) >= (data.total_pages || 1);
@@ -1851,7 +1866,7 @@ document.addEventListener('change', (event) => {
   if (select) {
     const dialog = select.closest('[data-history-dialog]');
     dialog.dataset.historyOffset = '0';
-    loadHistoryDialog(dialog, 1, 0);
+    loadHistoryDialog(dialog, 1, 0, historyChangesOnlyActive(dialog));
   }
   const changesOnly = event.target.closest('[data-history-changes-only]');
   if (changesOnly) {
@@ -1866,7 +1881,7 @@ document.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
     const dialog = changesOnly.closest('[data-history-dialog]');
-    if (dialog) loadHistoryDialog(dialog, 1, null, dialog.dataset.historyChangesOnly !== '1');
+    if (dialog) loadHistoryDialog(dialog, 1, null, !historyChangesOnlyActive(dialog));
     return;
   }
   const tab = event.target.closest('[data-history-tab]');
@@ -1894,6 +1909,14 @@ document.addEventListener('click', (event) => {
     dialog.dataset.historyOffset = String(next);
     loadHistoryDialog(dialog, 1, next);
   }
+});
+
+window.addEventListener('pageshow', () => {
+  document.querySelectorAll('[data-history-dialog]').forEach((dialog) => {
+    if (!dialog.classList.contains('is-open') && !dialog.hasAttribute('open')) {
+      resetHistoryDialog(dialog);
+    }
+  });
 });
 
 document.querySelectorAll('[data-color-picker]').forEach((picker) => {
