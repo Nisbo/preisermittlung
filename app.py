@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.60-dev"
+APP_VERSION = "0.1.61-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -1313,6 +1313,11 @@ body[data-theme="dark"] .visual-price-map {
 }
 .settings-grid.align-start {
   align-items: start;
+}
+.settings-stack {
+  display: grid;
+  gap: 12px;
+  align-self: start;
 }
 .settings-card {
   border: 1px solid var(--line);
@@ -6984,11 +6989,11 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
       <div class="market-list" style="margin-top: 12px">{manual_pdf_rows}</div>
     </section>
     <section class="panel" data-settings-panel="home" {'hidden' if active_settings_tab != 'home' else ''}>
-      <h2>Startseite</h2>
       <form method="post" action="/settings">
         <input type="hidden" name="home_settings_present" value="1">
-        <div class="settings-grid">
+        <div class="settings-grid align-start">
           <div class="settings-card">
+          <h3>Allgemein</h3>
           <div class="field">
             <label>Standardansicht</label>
             <select name="default_home_view">
@@ -7029,10 +7034,25 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             <label class="toggle-line"><input type="checkbox" name="mqtt_badge_enabled" value="true" {'checked' if mqtt_badge_enabled(config) else ''}> MQTT-Kennzeichnung anzeigen</label>
             <div class="small">Zeigt in der Preiszelle ein kleines Symbol, wenn MQTT Updates für den Artikel aktiv sind.</div>
           </div>
+          <div class="field" style="margin-top: 10px">
+            <label>Zusatztreffer anzeigen</label>
+            <select name="pdf_extra_matches_display">
+              <option value="wrap" {'selected' if extra_matches_mode == 'wrap' else ''}>Umbruch</option>
+              <option value="slider" {'selected' if extra_matches_mode == 'slider' else ''}>Slider</option>
+              <option value="off" {'selected' if extra_matches_mode == 'off' else ''}>Aus</option>
+            </select>
+            <div class="small">Betrifft zusätzliche Treffer bei Prospekt-Suchwörtern. Im Umbruch-Modus wird die Anzahl pro Zeile automatisch an die verfügbare Breite angepasst.</div>
           </div>
+          <div class="field" style="margin-top: 10px">
+            <input type="hidden" name="pdf_extra_matches_expanded_present" value="1">
+            <label class="toggle-line"><input type="checkbox" name="pdf_extra_matches_expanded" value="true" {'checked' if extra_matches_open else ''}> Zusatztreffer standardmäßig ausgeklappt</label>
+            <div class="small">Wenn deaktiviert, bleibt nur die Trefferzeile sichtbar und die Zusatztreffer lassen sich aufklappen.</div>
+          </div>
+          </div>
+          <div class="settings-stack">
           <div class="settings-card">
           <h3>Wunschpreis</h3>
-          <div class="field">
+          <div class="field" style="margin-top: 10px">
             <label class="toggle-line"><input type="checkbox" name="target_price_filter_enabled" value="true" {'checked' if target_price_filter_enabled(config) else ''}> Wunschpreis-Filter anzeigen</label>
             <div class="small">Zeigt in der Filterzeile einen Button, der nur Artikel mit erreichtem Wunschpreis anzeigt.</div>
           </div>
@@ -7080,21 +7100,6 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             <label class="toggle-line"><input type="checkbox" name="history_default_changes_only" value="true" {'checked' if history_default_changes_only(config) else ''}> Log standardmäßig nur mit Änderungen anzeigen</label>
             <div class="small">Wenn aktiv, zeigt der Log-Tab beim Öffnen zuerst nur Einträge, bei denen sich Preis oder Status geändert haben.</div>
           </div>
-          </div>
-          <div class="settings-card">
-          <div class="field">
-            <label>Zusatztreffer anzeigen</label>
-            <select name="pdf_extra_matches_display">
-              <option value="wrap" {'selected' if extra_matches_mode == 'wrap' else ''}>Umbruch</option>
-              <option value="slider" {'selected' if extra_matches_mode == 'slider' else ''}>Slider</option>
-              <option value="off" {'selected' if extra_matches_mode == 'off' else ''}>Aus</option>
-            </select>
-            <div class="small">Betrifft zusätzliche Treffer bei Prospekt-Suchwörtern. Im Umbruch-Modus wird die Anzahl pro Zeile automatisch an die verfügbare Breite angepasst.</div>
-          </div>
-          <div class="field" style="margin-top: 10px">
-            <input type="hidden" name="pdf_extra_matches_expanded_present" value="1">
-            <label class="toggle-line"><input type="checkbox" name="pdf_extra_matches_expanded" value="true" {'checked' if extra_matches_open else ''}> Zusatztreffer standardmäßig ausgeklappt</label>
-            <div class="small">Wenn deaktiviert, bleibt nur die Trefferzeile sichtbar und die Zusatztreffer lassen sich aufklappen.</div>
           </div>
           </div>
         </div>
