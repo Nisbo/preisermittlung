@@ -48,6 +48,7 @@ echo "nginx upload limit: ${CLIENT_MAX_BODY_SIZE}"
 apt update
 apt install -y \
   git \
+  curl \
   nginx \
   rsync \
   sudo \

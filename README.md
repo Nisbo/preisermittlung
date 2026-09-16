@@ -58,7 +58,7 @@ LAN-Betrieb rufst du die App über nginx auf, also standardmäßig über Port
 
 ## Was der Installer macht
 
-- installiert Systempakete wie Python, nginx, rsync, poppler-utils und Build-Abhängigkeiten
+- installiert Systempakete wie Python, nginx, curl, rsync, poppler-utils und Build-Abhängigkeiten
 - erstellt oder aktualisiert `/opt/preisermittlung`
 - erstellt `.venv`
 - installiert nur Runtime-Abhängigkeiten aus `requirements.txt`
@@ -258,6 +258,8 @@ Lokale Probe-Scripts und Entwicklungstools gehören nicht hinein.
   einem Neustart automatisch wieder läuft.
 - Playwright/Chromium: Ein echter Browser für Anbieter oder Webseiten, die ohne
   JavaScript-Ausführung keine brauchbaren Preise liefern.
+- curl: Transportwerkzeug für Fallback-Abfragen, wenn ein Anbieter normale
+  Python-HTTP-Abfragen blockiert.
 - poppler-utils und pdfplumber: Werkzeuge zum Lesen und Auswerten von
   PDF-Prospekten.
 - Pillow: Bildverarbeitung für Produktbilder und PDF-Treffer-Vorschauen.

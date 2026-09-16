@@ -3,6 +3,8 @@ from __future__ import annotations
 import html
 import json
 import re
+import shutil
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +20,10 @@ DESKTOP_USER_AGENT = (
     "Chrome/126.0.0.0 Safari/537.36"
 )
 USER_AGENT_OVERRIDE = ""
+
+
+class MuellerBlockedError(RuntimeError):
+    pass
 
 
 def set_user_agent(user_agent: str) -> None:
@@ -42,6 +48,8 @@ def get_html(url: str) -> str:
             return response.read().decode(charset, errors="replace")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 403 and ("_fs-ch-" in body or "Client Challenge" in body):
+            raise MuellerBlockedError(f"Mueller Client-Challenge bei {url}.") from exc
         raise RuntimeError(f"Mueller Fehler {exc.code} bei {url}: {body[:500]}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Mueller nicht erreichbar bei {url}: {exc}") from exc
@@ -207,13 +215,167 @@ def extract_image_url(chunk: str, json_ld: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def reader_url(url: str) -> str:
+    return "https://r.jina.ai/http://" + normalize_mueller_url(url)
+
+
+def get_reader_markdown(url: str) -> str:
+    target_url = reader_url(url)
+    request = urllib.request.Request(
+        target_url,
+        headers={
+            "accept": "text/plain,text/markdown,*/*",
+            "accept-language": "de-DE,de;q=0.9,en;q=0.7",
+            "user-agent": USER_AGENT_OVERRIDE or DESKTOP_USER_AGENT,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            return response.read().decode(charset, errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        curl_result = get_reader_markdown_with_curl(target_url)
+        if curl_result:
+            return curl_result
+        raise RuntimeError(f"Mueller Reader-Fehler {exc.code} bei {url}: {body[:300]}") from exc
+    except urllib.error.URLError as exc:
+        curl_result = get_reader_markdown_with_curl(target_url)
+        if curl_result:
+            return curl_result
+        raise RuntimeError(f"Mueller Reader nicht erreichbar bei {url}: {exc}") from exc
+
+
+def get_reader_markdown_with_curl(target_url: str) -> str:
+    curl = shutil.which("curl")
+    if not curl:
+        return ""
+    try:
+        result = subprocess.run(
+            [
+                curl,
+                "-L",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                "35",
+                "-H",
+                "accept: text/plain,text/markdown,*/*",
+                "-H",
+                "accept-language: de-DE,de;q=0.9,en;q=0.7",
+                target_url,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=40,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    if "Title:" not in result.stdout and "Markdown Content:" not in result.stdout:
+        return ""
+    return result.stdout
+
+
+def parse_search_fallback(markdown: str, code: str, product_id: str, original_url: str) -> Dict[str, Any]:
+    lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+    code_pattern = re.escape(code)
+    product_link_pattern = re.compile(
+        rf"^\[(?!\!)(?P<title>[^\]]+)\]\((?P<url>https://www\.mueller\.de/p/[^)]*(?:IPN|PPN)?{code_pattern}/?)\)"
+    )
+    for index, line in enumerate(lines):
+        match = product_link_pattern.search(line)
+        if not match:
+            continue
+
+        price_line = ""
+        old_price_line = ""
+        unit_price = None
+        availability_items: list[str] = []
+        for candidate in lines[index + 1 : index + 8]:
+            if not price_line and re.search(r"\d+(?:[.,]\d{2})?\s*€", candidate):
+                price_line = candidate
+                continue
+            if price_line and not old_price_line and re.search(r"^UVP\s+\d+(?:[.,]\d{2})?\s*€", candidate, re.I):
+                old_price_line = candidate
+                continue
+            if price_line and unit_price is None and re.search(r"\d+(?:[.,]\d{2})?\s*€\s*/\s*(?:1\s*)?(?:kg|g|l|ml|stk\.?|stück)", candidate, re.I):
+                unit_price = candidate
+                continue
+            for label in ("Online verfügbar", "In die Filiale lieferbar"):
+                if label in candidate and label not in availability_items:
+                    availability_items.append(label)
+
+        price_match = re.search(r"(\d+(?:[.,]\d{2})?)\s*€", price_line)
+        if not price_match:
+            continue
+        current_price = german_price_value(price_match.group(1))
+        if current_price is None:
+            continue
+
+        old_price = None
+        old_match = re.search(r"UVP\s+(\d+(?:[.,]\d{2})?)\s*€", old_price_line, re.I)
+        if old_match:
+            old_price = german_price_value(old_match.group(1))
+
+        image_url = None
+        for previous in reversed(lines[max(0, index - 5) : index]):
+            image_match = re.search(r"!\[[^\]]*\]\((https://images\.prod\.ecom\.mueller\.de[^)]+)\)", previous)
+            if image_match:
+                image_url = image_match.group(1)
+                break
+
+        title = html.unescape(match.group("title"))
+        product_url = match.group("url") or normalize_mueller_url(original_url)
+        price_details = normalize_price_details(unit_price=unit_price)
+        price_cents = cents(current_price)
+        old_price_cents = cents(old_price)
+        return {
+            "id": product_id,
+            "name": title or code,
+            "title": title or code,
+            "article_number": code,
+            "provider_article_number": code,
+            "price": current_price,
+            "price_cents": price_cents,
+            "price_text": euro_text(current_price),
+            "currency": "EUR",
+            "old_price": old_price,
+            "old_price_cents": old_price_cents,
+            "old_price_text": euro_text(old_price),
+            "unit_price": unit_price,
+            **price_details,
+            "available_service": "ONLINE",
+            "stock_level": None,
+            "availability": ", ".join(availability_items) or None,
+            "market_id": "online",
+            "url": product_url,
+            "image_url": image_url,
+        }
+
+    raise RuntimeError(f"Kein Mueller-Preis im Reader-Fallback fuer {original_url} gefunden.")
+
+
+def read_mueller_search_fallback(product: Dict[str, str], url: str, code: str) -> Dict[str, Any]:
+    if not code:
+        raise RuntimeError(f"Mueller Client-Challenge bei {url}. Keine Artikelnummer fuer Fallback gefunden.")
+    search_url = f"{MUELLER_BASE_URL}/search/?q={urllib.parse.quote(code)}"
+    markdown = get_reader_markdown(search_url)
+    return parse_search_fallback(markdown, code, product["id"], url)
+
+
 def read_mueller_product(product: Dict[str, str], _market: Dict[str, Any], _postal_code: str = "") -> Dict[str, Any]:
     url = normalize_mueller_url(product.get("product_url") or product.get("url") or "")
     if not url:
         raise RuntimeError("Mueller-Produkt braucht product_url.")
 
-    raw_html = get_html(url)
     preferred_code = product.get("article_number") or article_number_from_url(url)
+    try:
+        raw_html = get_html(url)
+    except MuellerBlockedError:
+        return read_mueller_search_fallback(product, url, preferred_code)
     chunk = product_chunk(raw_html, preferred_code)
     json_ld = extract_json_ld(raw_html)
     offers = json_ld.get("offers") or []
