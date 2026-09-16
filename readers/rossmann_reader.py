@@ -129,16 +129,53 @@ def first_attr(page: Any, selector: str, attribute: str) -> str:
 
 def extract_unit_price(lines: list[str]) -> Optional[str]:
     for line in lines:
-        if re.search(r"\((?:1|10|100)\s*(?:kg|g|l|ml|stück|stk\.?)\s*=\s*[\d,.]+\s*€\)", line, re.I):
+        if re.search(r"\((?:1|10|100)\s*(?:kg|g|l|ml|stück|stk\.?)\s*=\s*(?:€\s*)?[\d,.]+\s*€?\)", line, re.I):
             return line
     for line in lines:
-        if re.search(r"\(1\s*(?:kg|l)\s*=\s*[\d,.]+\s*€\)", line, re.I):
+        if re.search(r"\(1\s*(?:kg|l)\s*=\s*(?:€\s*)?[\d,.]+\s*€?\)", line, re.I):
             return line
     return None
 
 
+def rossmann_product_lines(lines: list[str]) -> list[str]:
+    stop_markers = (
+        "Artikelnummer:",
+        "Produktbeschreibung",
+        "Ähnliche Produkte",
+        "Das könnte dir auch gefallen",
+    )
+    result: list[str] = []
+    for line in lines:
+        if result and any(marker.lower() in line.lower() for marker in stop_markers):
+            break
+        result.append(line)
+    return result
+
+
+def extract_visible_price_texts(lines: list[str]) -> tuple[Optional[str], Optional[str]]:
+    product_lines = rossmann_product_lines(lines)
+    text = "\n".join(product_lines)
+    current_match = re.search(r"Aktueller\s+Artikelpreis\s*:\s*([\d,.]+)\s*€", text, re.I)
+    if current_match:
+        old_price: Optional[str] = None
+        for index, line in enumerate(product_lines):
+            if line.lower() == "ehemaliger preis":
+                for candidate in product_lines[index + 1 : index + 4]:
+                    if re.fullmatch(r"\d+(?:[.,]\d{2})\s*€?", candidate.replace("\xa0", " ").strip()):
+                        old_price = candidate
+                        break
+                break
+        return f"{current_match.group(1)} €", old_price
+
+    regular_match = re.search(r"(?<!Aktueller\s)Artikelpreis\s+([\d,.]+)\s*€", text, re.I)
+    if regular_match:
+        return f"{regular_match.group(1)} €", None
+
+    return None, None
+
+
 def extract_product_image(page: Any, title: str) -> Optional[str]:
-    images = page.locator("img.rm-product__image").evaluate_all(
+    images = page.locator("img.rm-product__image, img").evaluate_all(
         """(els) => els.map(img => ({
             src: img.currentSrc || img.src,
             alt: img.alt || '',
@@ -148,7 +185,12 @@ def extract_product_image(page: Any, title: str) -> Optional[str]:
     )
     title_key = title.strip().lower()
     for image in images:
-        if title_key and str(image.get("alt") or "").strip().lower() == title_key:
+        alt_key = str(image.get("alt") or "").strip().lower()
+        if title_key and (alt_key == title_key or title_key in alt_key) and int(image.get("width") or 0) >= 300:
+            return str(image["src"])
+    for image in images:
+        alt_key = str(image.get("alt") or "").strip().lower()
+        if title_key and (alt_key == title_key or title_key in alt_key):
             return str(image["src"])
     for image in images:
         src = str(image.get("src") or "")
@@ -199,7 +241,12 @@ def read_rossmann_product(product: Dict[str, str], _market: Dict[str, Any], _pos
                 ".rm-price__old, .rm-price--old, [class*=old-price], [class*=strike], [class*=uvp]",
             )
             lines = [line.strip() for line in body_text.splitlines() if line.strip()]
-            unit_price = extract_unit_price(lines)
+            fallback_price_text, fallback_old_price_text = extract_visible_price_texts(lines)
+            if not price_value and not price_text:
+                price_text = fallback_price_text or ""
+            if not old_price_text:
+                old_price_text = fallback_old_price_text or ""
+            unit_price = extract_unit_price(rossmann_product_lines(lines))
             image_url = extract_product_image(page, title)
             peak_memory_bytes = max(peak_memory_bytes, chromium_memory_bytes())
         finally:
