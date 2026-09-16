@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.58-dev"
+APP_VERSION = "0.1.59-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -1878,12 +1878,12 @@ function historyState(dialog) {
   const key = historyDialogKey(dialog);
   if (!historyDialogStates.has(key)) {
     historyDialogStates.set(key, {
-      changesOnly: false,
+      changesOnly: dialog.dataset.historyDefaultChangesOnly === 'true',
       offset: 0,
       page: 1,
       totalPages: 1,
       requestId: 0,
-      panel: 'chart',
+      panel: dialog.dataset.historyDefaultView || 'chart',
       range: dialog.dataset.historyDefaultRange || '7d',
     });
   }
@@ -1922,23 +1922,23 @@ function closeHistoryRangeMenus(exceptDialog = null) {
 }
 function resetHistoryDialog(dialog) {
   const state = historyState(dialog);
-  state.changesOnly = false;
+  state.changesOnly = dialog.dataset.historyDefaultChangesOnly === 'true';
   state.offset = 0;
   state.page = 1;
   state.totalPages = 1;
   state.requestId = 0;
-  state.panel = 'chart';
+  state.panel = dialog.dataset.historyDefaultView || 'chart';
   state.range = dialog.dataset.historyDefaultRange || '7d';
   const range = dialog.querySelector('[data-history-range]');
   if (range) range.value = state.range;
   syncHistoryRangeControl(dialog);
   closeHistoryRangeMenus(dialog);
-  setHistoryChangesOnly(dialog, false);
+  setHistoryChangesOnly(dialog, state.changesOnly);
   dialog.querySelectorAll('[data-history-tab]').forEach((item) => {
-    item.classList.toggle('is-active', item.dataset.historyTab === 'chart');
+    item.classList.toggle('is-active', item.dataset.historyTab === state.panel);
   });
   dialog.querySelectorAll('[data-history-panel]').forEach((panel) => {
-    panel.hidden = panel.dataset.historyPanel !== 'chart';
+    panel.hidden = panel.dataset.historyPanel !== state.panel;
   });
 }
 async function loadHistoryDialog(dialog, page = 1, offsetOverride = null, changesOnlyOverride = null) {
@@ -2424,6 +2424,16 @@ def allow_iframe_embedding(config: Dict[str, Any]) -> bool:
 def history_default_range(config: Dict[str, Any]) -> str:
     value = settings_value(config, "history_default_range", "7d").strip().lower()
     return value if value in {"24h", "7d", "14d", "1m", "6m", "12m"} else "7d"
+
+
+def history_default_view(config: Dict[str, Any]) -> str:
+    value = settings_value(config, "history_default_view", "chart").strip().lower()
+    return value if value in {"chart", "log"} else "chart"
+
+
+def history_default_changes_only(config: Dict[str, Any]) -> bool:
+    raw = settings_value(config, "history_default_changes_only", "false").strip().lower()
+    return raw in {"1", "true", "yes", "on", "ja"}
 
 
 def product_below_target_price(product: Dict[str, Any]) -> bool:
@@ -3724,6 +3734,11 @@ def save_settings_from_form(config: Dict[str, Any]) -> Dict[str, Any]:
         settings["target_price_missed_display"] = missed_mode if missed_mode in {"hide", "normal", "muted"} else "normal"
         history_range = request.form.get("history_default_range", "7d").strip().lower()
         settings["history_default_range"] = history_range if history_range in {"24h", "7d", "14d", "1m", "6m", "12m"} else "7d"
+        history_view = request.form.get("history_default_view", "chart").strip().lower()
+        settings["history_default_view"] = history_view if history_view in {"chart", "log"} else "chart"
+        settings["history_default_changes_only"] = (
+            "true" if request.form.get("history_default_changes_only") == "true" else "false"
+        )
     if "pdf_extra_matches_display" in request.form:
         mode = request.form.get("pdf_extra_matches_display", "wrap").strip().lower()
         settings["pdf_extra_matches_display"] = mode if mode in {"wrap", "slider", "off"} else "wrap"
@@ -5855,6 +5870,8 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
             for category in categories
         )
         selected_history_range = history_default_range(config)
+        selected_history_view = history_default_view(config)
+        selected_history_changes_only = history_default_changes_only(config)
         history_range_choices = "".join(
             f'<button class="history-range-choice{" is-active" if selected_history_range == value else ""}" type="button" data-history-range-choice="{escape(value)}">{escape(label)}</button>'
             for value, label in [
@@ -5870,7 +5887,7 @@ def render_page(config: Dict[str, Any], state: Dict[str, Any], error: Optional[s
         delete_product_dialog_id = f"delete-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
         reset_history_dialog_id = f"reset-history-{re.sub(r'[^a-zA-Z0-9_-]+', '-', product.get('id', 'produkt'))}"
         history_dialogs.append(
-            f'<div class="dialog-backdrop" id="{escape(history_dialog_id)}" data-history-dialog="true" data-product-id="{escape(str(product.get("id", "")))}" data-history-default-range="{escape(selected_history_range)}">'
+            f'<div class="dialog-backdrop" id="{escape(history_dialog_id)}" data-history-dialog="true" data-product-id="{escape(str(product.get("id", "")))}" data-history-default-range="{escape(selected_history_range)}" data-history-default-view="{escape(selected_history_view)}" data-history-default-changes-only="{"true" if selected_history_changes_only else "false"}">'
             '<section class="dialog">'
             '<div class="dialog-head">'
             f'<div><h2>Preisstatistik</h2><div class="small">{product_name}</div></div>'
@@ -7038,6 +7055,9 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             <label class="toggle-line"><input type="checkbox" name="target_price_extra_matches_enabled" value="true" {'checked' if target_price_extra_matches_enabled(config) else ''}> Wunschpreis auch bei Zusatzartikeln anzeigen</label>
             <div class="small">Bei Prospekt-Zusatztreffern kann die Zuordnung unsicher sein, wenn ein Suchwort mehrere unterschiedliche Angebote findet. Dort wird kompakt „WP“ angezeigt.</div>
           </div>
+          </div>
+          <div class="settings-card">
+          <h3>Statistik</h3>
           <div class="field" style="margin-top: 10px">
             <label>Standardzeitraum Statistik</label>
             <select name="history_default_range">
@@ -7049,6 +7069,18 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
               <option value="12m" {'selected' if history_default_range(config) == '12m' else ''}>12 Monate</option>
             </select>
             <div class="small">Dieser Zeitraum ist vorausgewählt, wenn du die Preisstatistik eines Artikels öffnest.</div>
+          </div>
+          <div class="field" style="margin-top: 10px">
+            <label>Standardansicht Statistik</label>
+            <select name="history_default_view">
+              <option value="chart" {'selected' if history_default_view(config) == 'chart' else ''}>Chart</option>
+              <option value="log" {'selected' if history_default_view(config) == 'log' else ''}>Log</option>
+            </select>
+            <div class="small">Dieser Bereich ist vorausgewählt, wenn du die Preisstatistik eines Artikels öffnest.</div>
+          </div>
+          <div class="field" style="margin-top: 10px">
+            <label class="toggle-line"><input type="checkbox" name="history_default_changes_only" value="true" {'checked' if history_default_changes_only(config) else ''}> Log standardmäßig nur mit Änderungen anzeigen</label>
+            <div class="small">Wenn aktiv, zeigt der Log-Tab beim Öffnen zuerst nur Einträge, bei denen sich Preis oder Status geändert haben.</div>
           </div>
           </div>
           <div class="settings-card">
