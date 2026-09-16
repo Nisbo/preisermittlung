@@ -54,7 +54,7 @@ GENERATED_PATH = Path(__file__).with_name("generated")
 PRICE_HISTORY_PATH = Path(__file__).with_name("price_history.jsonl")
 BACKUP_IMPORT_PATH = Path(__file__).with_name("tmp").joinpath("backup_imports")
 APP_NAME = "Preisermittlung"
-APP_VERSION = "0.1.59-dev"
+APP_VERSION = "0.1.60-dev"
 GITHUB_REPO_URL = "https://github.com/Nisbo/preisermittlung"
 SERVICE_NAME = os.environ.get("PREISERMITTLUNG_SERVICE", "preisermittlung")
 UPDATE_SERVICE_NAME = os.environ.get("PREISERMITTLUNG_UPDATE_SERVICE", f"{SERVICE_NAME}-update")
@@ -7017,16 +7017,6 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             <div class="small">Zeigt auf der Startseite links neben der Kategorieauswahl einen Button für mehrere Kategorien.</div>
           </div>
           <div class="field" style="margin-top: 10px">
-            <label class="toggle-line"><input type="checkbox" name="target_price_filter_enabled" value="true" {'checked' if target_price_filter_enabled(config) else ''}> Wunschpreis-Filter anzeigen</label>
-            <div class="small">Zeigt in der Filterzeile einen Button, der nur Artikel mit erreichtem Wunschpreis anzeigt.</div>
-          </div>
-          <div class="field" style="margin-top: 10px">
-            <label class="toggle-line"><input type="checkbox" name="mqtt_badge_enabled" value="true" {'checked' if mqtt_badge_enabled(config) else ''}> MQTT-Kennzeichnung anzeigen</label>
-            <div class="small">Zeigt in der Preiszelle ein kleines Symbol, wenn MQTT Updates für den Artikel aktiv sind.</div>
-          </div>
-          </div>
-          <div class="settings-card">
-          <div class="field">
             <label>Kennung in der Produkttabelle</label>
             <select name="product_id_display">
               <option value="show" {'selected' if id_display_mode == 'show' else ''}>Kennung anzeigen</option>
@@ -7035,10 +7025,18 @@ def render_settings_page(config: Dict[str, Any], state: Dict[str, Any], error: O
             </select>
             <div class="small">Bei „Interaktiv“ erscheint die Kennung per Mouseover oder Klick auf das Wort Kennung.</div>
           </div>
+          <div class="field" style="margin-top: 10px">
+            <label class="toggle-line"><input type="checkbox" name="mqtt_badge_enabled" value="true" {'checked' if mqtt_badge_enabled(config) else ''}> MQTT-Kennzeichnung anzeigen</label>
+            <div class="small">Zeigt in der Preiszelle ein kleines Symbol, wenn MQTT Updates für den Artikel aktiv sind.</div>
+          </div>
           </div>
           <div class="settings-card">
           <h3>Wunschpreis</h3>
           <div class="field">
+            <label class="toggle-line"><input type="checkbox" name="target_price_filter_enabled" value="true" {'checked' if target_price_filter_enabled(config) else ''}> Wunschpreis-Filter anzeigen</label>
+            <div class="small">Zeigt in der Filterzeile einen Button, der nur Artikel mit erreichtem Wunschpreis anzeigt.</div>
+          </div>
+          <div class="field" style="margin-top: 10px">
             <label class="toggle-line"><input type="checkbox" name="target_price_highlight_enabled" value="true" {'checked' if target_price_highlight_enabled(config) else ''}> Erreichte Wunschpreise farblich markieren</label>
             <div class="small">Wenn der aktuelle Preis den Wunschpreis erreicht oder unterschreitet, wird die Artikelzeile hervorgehoben.</div>
           </div>
