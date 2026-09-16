@@ -285,8 +285,20 @@ def parse_search_fallback(markdown: str, code: str, product_id: str, original_ur
     product_link_pattern = re.compile(
         rf"^\[(?!\!)(?P<title>[^\]]+)\]\((?P<url>https://www\.mueller\.de/p/[^)]*(?:IPN|PPN)?{code_pattern}/?)\)"
     )
+    generic_product_link_pattern = re.compile(
+        r"^\[(?!\!)(?P<title>[^\]]+)\]\((?P<url>https://www\.mueller\.de/p/[^)]+)\)"
+    )
+    wish_marker = re.compile(rf"Produkt\s+{code_pattern}\s+zur Wunschliste", re.I)
+
     for index, line in enumerate(lines):
         match = product_link_pattern.search(line)
+        has_nearby_wish_marker = any(
+            wish_marker.search(candidate) for candidate in lines[max(0, index - 8) : index]
+        )
+        if not match and not has_nearby_wish_marker:
+            continue
+        if not match:
+            match = generic_product_link_pattern.search(line)
         if not match:
             continue
 
@@ -328,7 +340,10 @@ def parse_search_fallback(markdown: str, code: str, product_id: str, original_ur
                 break
 
         title = html.unescape(match.group("title"))
-        product_url = match.group("url") or normalize_mueller_url(original_url)
+        if "itemId=" in original_url:
+            product_url = normalize_mueller_url(original_url)
+        else:
+            product_url = match.group("url") or normalize_mueller_url(original_url)
         price_details = normalize_price_details(unit_price=unit_price)
         price_cents = cents(current_price)
         old_price_cents = cents(old_price)
